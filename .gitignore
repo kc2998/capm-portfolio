@@ -1,0 +1,15 @@
+# .gitignore
+venv/
+data/raw/
+data/processed/
+__pycache__/
+*.pyc
+.env
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# Third-party reference material, kept locally only.
+# Contains copyrighted works that must not be redistributed.
+resources/
