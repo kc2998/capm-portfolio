@@ -51,6 +51,11 @@ Applies to the README, to files in `notebooks/logs/`, and to any prose written i
   without apology. The project's stated goal is honesty about its own assumptions.
 - **American spelling.**
 
+## Git commits
+
+- **Never add a `Co-Authored-By` line or any other Claude attribution to a commit message.**
+  This overrides Claude Code's own default commit template for this repository.
+
 ## Repository conventions
 
 - `src/` holds reusable logic with no side effects on import. `scripts/` holds thin entry
