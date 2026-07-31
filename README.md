@@ -171,9 +171,9 @@ Twitter sentiment (API access got too expensive for a free tier).
 
 | Data | Source | Cost | Notes |
 |---|---|---|---|
-| Daily prices | `yfinance` | Free | |
+| Daily prices | `yfinance` | Free | Built and validated as one parquet file per CIK under `data/raw/prices/`, plus a coverage report at `data/processed/prices_coverage.parquet`; full methodology in `notebooks/logs/loaders_construction.md` |
 | Fundamentals, market cap | SEC EDGAR XBRL API | Free | Point in time caveat below |
-| Universe membership | Wikipedia S&P 500 page, retrieved per date through the MediaWiki revision API | Free | Requires a real `User-Agent` header or requests are blocked with a 403. Usable back to 2008. See `notebooks/logs/universe_construction.md` |
+| Universe membership | Wikipedia S&P 500 page, retrieved per date through the MediaWiki revision API (2008 onward), plus a book-derived CSV (Clenow/Norgate) for 1996 to 2008 | Free | Wikipedia requires a real `User-Agent` header or requests are blocked with a 403. Built and validated as `data/processed/universe_spans.parquet` and `data/processed/ticker_history.parquet`; full methodology in `notebooks/logs/universe_construction.md` |
 | Insider trading | SEC EDGAR full text search (Form 4) | Free | |
 | Short interest | FINRA | Free | |
 | Risk free rate | 3 month T-bill yield, FRED API | Free | |
@@ -197,7 +197,9 @@ entire purpose of avoiding survivorship bias. Free sources have their poorest co
 exactly those names. The price loader must measure and report the fraction of historical
 members for which prices cannot be retrieved, rather than dropping them quietly, because
 quiet dropping would reintroduce survivorship bias at the data layer after it had been
-removed at the universe layer.
+removed at the universe layer. Measured directly, not assumed: roughly 91% coverage for
+still-active names versus 49% for delisted ones, a real gap, see
+`notebooks/logs/loaders_construction.md`.
 
 **Ticker format differs between sources.** Wikipedia writes multi class tickers with a period
 (`BRK.B`, `BF.B`) where `yfinance` expects a hyphen (`BRK-B`). Translation belongs in the
@@ -236,9 +238,11 @@ quant-portfolio/
 │   └── Active_Portfolio_Management_A_Quantitati.pdf   # Grinold & Kahn reference text
 ├── src/
 │   ├── universe/
-│   │   └── point_in_time.py    # reconstructs S&P 500 membership by date
+│   │   ├── point_in_time.py    # reconstructs S&P 500 membership by date, done
+│   │   └── README.md           # what it produces, schema, toy examples
 │   ├── loaders/
-│   │   ├── prices.py
+│   │   ├── prices.py            # point in time OHLCV per CIK, done
+│   │   ├── README.md            # what it produces, schema, toy examples
 │   │   ├── fundamentals.py
 │   │   ├── insider.py
 │   │   └── short_interest.py
@@ -265,7 +269,11 @@ quant-portfolio/
 ├── notebooks/                    # exploratory work happens here first
 │   └── logs/                     # findings from exploratory work, kept after the notebook moves on
 ├── tests/
+│   ├── test_point_in_time.py     # pure logic only; no network calls mocked or hit
+│   └── test_prices.py            # pure logic only; no network calls mocked or hit
 └── scripts/                       # thin entry points that call into src
+    ├── build_universe.py         # python -m scripts.build_universe [--refresh] [--verbose]
+    └── build_prices.py           # python -m scripts.build_prices [--refresh] [--verbose]
 ```
 
 The separation between `src` and `scripts` is deliberate: `src` holds reusable, testable logic with no side effects on import, `scripts` holds short, direct entry points that call into `src` and decide what to actually run and where to save output. Exploratory or messy data investigation (inspecting a new source's structure, debugging a scrape) happens in `notebooks/` first, and only gets promoted into `src` once it's a clean, working function.
@@ -277,7 +285,7 @@ logs state the evidence behind them.
 
 ## Build order
 
-1. Point in time universe builder (`src/universe/point_in_time.py`) plus a price loader (`src/loaders/prices.py`). Validate with a trivial backtest of the S&P 500 itself, no factors yet, just to confirm the universe and price pipeline are correct.
+1. Point in time universe builder (`src/universe/point_in_time.py`, done, see its own `README.md`) plus a price loader (`src/loaders/prices.py`, done, see its own `README.md`). Validate with a trivial backtest of the S&P 500 itself, no factors yet, just to confirm the universe and price pipeline are correct.
 2. Fundamentals loader plus the five foundational factors. Build `scoring/zscore.py` and `scoring/combine.py` with missing data handling from day one.
 3. `scoring/neutralize.py`, tested against toy examples before trusting it on real data.
 4. Quantile bucket portfolio construction (simple long top fifth, short bottom fifth), plus `backtest/engine.py` and `backtest/metrics.py`, with `rebalance_freq` read from config, and a basic transaction cost model. This gives a full working loop end to end on foundational factors alone.
@@ -310,6 +318,48 @@ Wikipedia and some other scraped sources return `403 Forbidden` without a real `
 ## Current status
 
 - Repo scaffolding complete (folder structure, virtual environment, `.gitignore`, `requirements.txt`).
-- Universe approach settled. Exploration in `notebooks/exploring_universe.ipynb` established that the page's changes log is too incomplete to reconstruct membership from, and that retrieving the article's revision for each target date works instead, back to at least 2008. Findings and limitations are written up in `notebooks/logs/universe_construction.md`.
-- Retrieval of a single dated snapshot works, including revision lookup, HTML parsing, and identification of the constituents table by column signature across eleven years of changing column names.
-- Next concrete step: write the normalizer that turns any era's constituent table into a clean ticker list, verify it against the 2008 and 2022 snapshots, then loop it over monthly dates and diff consecutive snapshots to produce the spans table. Once that runs in the notebook, promote it into `src/universe/point_in_time.py` with the row count validation (495 to 510) in place.
+- **Point in time universe built and validated, 1996 to present.** Two artifacts:
+  `data/processed/universe_spans.parquet` (membership, one row per interval) and
+  `data/processed/ticker_history.parquet` (which symbol an entity traded under, and when).
+  Built from Wikipedia's revision history (2008 onward, re-derivable at any time) and a
+  book-derived CSV (1996 to 2008, Clenow/Norgate), reconciled against each other and
+  cross-checked. Full methodology, every source considered and rejected, and every bug
+  found while building it are recorded in `notebooks/logs/universe_construction.md`.
+- Of the pre-2008 tickers flagged for manual review, 82 of 193 have been automatically
+  confirmed or corrected against primary source SEC filings (a citable filing and quoted
+  disclosure for each, not an assumption). A known, bounded residual remains: 3 corporate
+  action cases genuinely need a person to resolve (a tracking stock or dual class split),
+  and 204 are checked but inconclusive or unmatched, explained rather than silently dropped.
+  None of this blocks using the universe; it only affects how far the pre-2008 ticker
+  strings themselves can be trusted without a closer look.
+- One decision still open: whether dual class share listings (e.g. `GOOG`/`GOOGL`) should be
+  treated as one company or two; see the log's Open items.
+- **Promoted to `src/universe/point_in_time.py`.** Side effect free on import, project root
+  relative paths, a small public API (`build_universe()`, `membership_on()`, `ticker_on()`)
+  instead of a linear script. Verified against the notebook's own output: identical row
+  counts and membership on every test date. `notebooks/exploring_universe.ipynb` stays as
+  the historical record of how this was built; `src/universe/README.md` is the usage
+  reference for the promoted version. 24 tests in `tests/test_point_in_time.py` cover the
+  pure logic, several written directly against bugs found while building this.
+- A known, documented gap in `ticker_history`: a handful of tickers (`GOOGL`/`GOOG`,
+  `FOXA`/`FOX`, `XOM`, and others) are attributed to two different CIKs where an
+  administrative reorganization changed the reporting entity with no real trading
+  discontinuity. A fix was attempted and reverted after it turned out to also merge two
+  genuinely different companies handed the same ticker via a real merger; see the log's Open
+  items for the distinguishing signal still needed before this can be fixed safely.
+- **Point in time price loader built and validated**, `src/loaders/prices.py`. Produces one
+  parquet file per CIK (`data/raw/prices/{cik}.parquet`, gitignored) and a coverage report
+  (`data/processed/prices_coverage.parquet`), fetched via `yfinance`, keyed by (CIK, ticker)
+  rather than CIK alone since a single CIK can hold more than one concurrently priced
+  security (a dual class share) as well as more than one ticker over time (a rename).
+  Verified against every real edge case found: ticker recycling (a retired symbol silently
+  reused by an unrelated company), dual and triple class shares, genuine retirements, and a
+  round trip rename. Measured, not assumed: roughly 91% coverage for still-active names
+  versus 49% for delisted ones. Side effect free on import, a small public API
+  (`build_prices()`, `fetch_cik_prices()`, `load_cik_prices()`), 12 tests in
+  `tests/test_prices.py` covering the pure decision logic (the network-bound classification
+  itself is validated empirically, not mocked). `notebooks/exploring_loaders.ipynb` stays as
+  the historical record; `src/loaders/README.md` is the usage reference; full methodology in
+  `notebooks/logs/loaders_construction.md`.
+- Next concrete step: the fundamentals loader and the five foundational factors, per the
+  build order below.
