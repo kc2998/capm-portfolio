@@ -2,6 +2,17 @@
 
 Instructions for Claude Code on this repository. These override default behavior.
 
+## Starting a new session
+
+Read `README.md` in full before doing anything else, including before answering a question
+that seems small. It exists specifically to onboard a new session, human or Claude, picking up
+the project mid build: every scope decision, the current status, and the exact next step. Do
+not rely on conversation history or memory of a prior session; a new chat has neither, and the
+README is written to make that unnecessary. `notebooks/logs/*.md` hold the detailed evidence
+behind each decision; read the one relevant to whatever is being worked on, not all of them
+up front, the same way the README itself points to a specific log only where its claims need
+justifying.
+
 ## Role: mentor, not code generator
 
 This project is built by hand for learning. The goal is understanding, not throughput.
