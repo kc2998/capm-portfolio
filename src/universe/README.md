@@ -121,8 +121,8 @@ so there are four plausible replacement tickers, not one. See the log for the fu
 ## Rebuilding
 
 ```bash
-python scripts/build_universe.py            # load if present, else build
-python scripts/build_universe.py --refresh --verbose   # force a full rebuild, with progress
+python -m scripts.build_universe            # load if present, else build
+python -m scripts.build_universe --refresh --verbose   # force a full rebuild, with progress
 ```
 
 A full rebuild from nothing (all caches deleted) takes several minutes and makes several

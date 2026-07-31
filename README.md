@@ -94,11 +94,104 @@ Rules that follow from this:
   its rank moves outside a buffer), partial rebalancing toward the target, and explicit
   turnover constraints in the `cvxpy` optimizer.
 
+## Risk model versus alpha model
+
+A quant equity system maintains two factor sets that serve different purposes, and conflating
+them is a common structural error. **Risk factors** describe common covariance: their role is
+to measure a portfolio's exposure to a shared source of return variation and to forecast
+portfolio risk. **Alpha factors** are the return predictors actually bet on, signals believed
+to forecast future return that are not already captured elsewhere.
+
+Including a factor in the risk model is a separate decision from neutralizing it. Including a
+factor means only "we want to know our exposure to this." Whether that exposure is then driven
+to zero (neutralized, because there is no view on it), held deliberately (bet on, because there
+is), or occasionally taken negative, is decided in the optimizer using the alpha model, not in
+the risk model itself. The same characteristic can serve both roles at once: a risk model
+includes a value factor because value explains common return covariation, while a value
+investor still holds positive value exposure on purpose. The risk model does not say what to
+bet on; it ensures the only bets carried are the ones chosen.
+
+This distinction also explains why classic, thoroughly studied factors remain worth modeling
+even once their premium has decayed. Whether a factor's premium still pays is the alpha
+question, and for the classic themes the honest answer is generally less than it once did,
+since publication and crowding erode premia. Whether a factor is useful as a risk control
+depends only on whether it still explains common covariance, which is more durable, since
+co-movement comes from shared economic exposure rather than from a mispricing that arbitrage
+competes away. A factor can be dead as alpha and indispensable as a risk axis.
+
+**The risk-model taxonomy** adopted for this project is the 13 themes identified by Jensen,
+Kelly, and Pedersen (2023, "Is There a Replication Crisis in Finance?", Journal of Finance),
+who study 153 factors across 93 countries and find that they cluster into 13 themes by
+covariance, exactly the property a risk model needs:
+
+| Theme | Example characteristic | Primary data | Buildable with current loaders |
+|---|---|---|---|
+| Momentum | 12 month return, skipping the last month | Daily prices | Yes |
+| Short term reversal | Negative of last month return | Daily prices | Yes |
+| Low risk | Volatility, beta, idiosyncratic volatility | Daily prices | Yes |
+| Seasonality | Same calendar month historical return | Daily prices | Yes |
+| Size | Log market capitalization | Price and shares outstanding | Partial, needs shares outstanding |
+| Value | Book, earnings, cash flow, or sales to price | Fundamentals | No, needs fundamentals loader |
+| Profitability | Gross profits to assets, return on equity | Fundamentals | No |
+| Quality | Composite of profitability, stability, safety | Fundamentals | No |
+| Profit growth | Change in earnings or profitability | Fundamentals | No |
+| Investment | Asset growth | Fundamentals | No |
+| Accruals | Non-cash component of earnings | Fundamentals | No |
+| Debt issuance | Net debt issuance | Fundamentals | No |
+| Low leverage | Debt to equity, book leverage | Fundamentals | No |
+
+A complete risk model also needs a market factor, industry factors (GICS), and a per-stock
+specific-risk term. GICS sector was dropped when the universe was promoted into `src/`: it
+exists in the cached snapshots but not in `universe_spans` or `ticker_history`, and will need
+to be re-attached before industry factors or sector-neutral scoring are possible, see the
+universe log's open items. Eight of the 13 themes are fundamentals based, so a full 13-theme
+risk model is gated on the EDGAR fundamentals loader and on shares outstanding. Only five
+themes are buildable from price and volume data alone.
+
+The Open Source Asset Pricing project (Chen and Zimmermann, 2022, "Open Source Cross-Sectional
+Asset Pricing", Critical Finance Review) is used as a definitional reference. It publishes open
+code reconstructing roughly 300 published signals against CRSP and Compustat data, which is
+licensed and cannot be redistributed, but the published formulas and documented replication
+t-stats can be read and reimplemented against this project's own free data sources.
+
+**Factor-zoo discipline.** After correcting for multiple testing at a t-stat hurdle near 2.78
+(Harvey, Liu, and Zhu, 2016), roughly 80 percent of published anomalies become insignificant,
+and independent machine-learning replications reach a similar conclusion: once redundancy is
+stripped, only a handful of independent dimensions remain, essentially market, value, momentum,
+reversal, and a risk or quality axis. The honest prior for any new candidate factor is
+skepticism. Every candidate is judged on marginal information coefficient after
+orthogonalizing against the existing suite and the risk factors, and on an honest count of how
+many ideas were tried before it. Full reasoning and references in
+`notebooks/logs/factor_suite_design.md`.
+
+## Novel alpha candidates
+
+Proprietary signals worth curating, chosen because they are buildable from free, scrapeable
+data and documented to have low correlation with the standard themes. Reported magnitudes come
+from the original samples, mostly predate 2020, and several show documented decay: treat them
+as reasons to test, not as expected returns, with the information coefficient on this project's
+own universe as the arbiter.
+
+| Signal | Idea | Data source | Horizon | Loader status |
+|---|---|---|---|---|
+| Lazy Prices | Year over year textual similarity of a firm's 10-K/10-Q; firms that materially change disclosure language underperform | EDGAR filing text | Months | Reuses existing filing-fetch machinery (`fetch_filing_text`, `get_filing_history` in `src/universe/point_in_time.py`) |
+| Opportunistic insiders | Net insider buying restricted to insiders whose trades are irregular (information driven), not calendar routine | EDGAR Form 4 | Weeks to months | Needs Form 4 loader |
+| PEAD / SUE | Standardized unexpected earnings drives continued drift; expected earnings from a seasonal random walk, no analyst estimates needed | EDGAR fundamentals plus earnings dates | 60 to 90 days | Needs fundamentals loader |
+| Wikipedia attention | Retail attention (page view spikes) predicts returns, contrarian: heavily attended names underperform | Wikimedia page-view REST API | Days | Needs a small new loader |
+
+Three of the four are filing or event driven and play out over months, so they sit in the same
+slow sleeve as the fundamental factors and align with a monthly rebalance. Wikipedia attention
+is the exception, a fast contrarian signal belonging in the price and volume sleeve. The
+insider factor is built in its opportunistic-only form from the start, since routine trades
+carry essentially no alpha and only add noise to the naive sum of net buying originally
+described under Factor selection below.
+
 ## Factor selection
 
 Factors are grouped by the frequency at which their underlying information genuinely
-refreshes. A factor contributes new information only when its inputs change, so this grouping
-determines which cadences are meaningful and which merely generate turnover.
+refreshes. This is a build-order and rebalance-cadence grouping, distinct from the risk-model
+theme taxonomy above: a factor contributes new information only when its inputs change, so this
+grouping determines which cadences are meaningful and which merely generate turnover.
 
 **Weekly horizon: price and volume only.** These require no fundamentals, carry no filing
 lag, and are not subject to restatement, which makes them both the cheapest factors to build
@@ -177,10 +270,11 @@ Twitter sentiment (API access got too expensive for a free tier).
 | Insider trading | SEC EDGAR full text search (Form 4) | Free | |
 | Short interest | FINRA | Free | |
 | Risk free rate | 3 month T-bill yield, FRED API | Free | |
+| Wikipedia page views | Wikimedia page-view REST API | Free | Needed for the Wikipedia attention factor, not yet built |
 | Reddit sentiment (later) | Reddit API (PRAW) | Free tier | |
 | Earnings transcripts (later) | Scraped or a cheap transcript API | Mostly free, some paid | Coverage gaps for smaller companies |
 
-**Known limitation to document honestly in the repo, not hide**: free fundamentals sources generally show current, restated financials, not the originally filed numbers as they stood on the filing date. This is a real point in time gap. Price only signals (momentum, low volatility) don't have this problem since price history isn't restated. Treat backtest results involving fundamentals with more skepticism than price only results, and note this limitation wherever fundamentals data is used.
+**Known limitation, revised after building the fundamentals loader**: this section originally assumed, without checking, that free fundamentals sources generally show only current, restated financials, not the originally filed numbers as they stood on the filing date. Checked directly against EDGAR's own XBRL `companyfacts` API (`src/loaders/fundamentals.py`, full evidence in `notebooks/logs/fundamentals_construction.md`): this source retains every historical filed vintage of a fact, each tagged with its own filing date, so a genuine restatement is resolvable point in time by taking the value filed on or before the backtest date. Verified against a real case: Apple's fiscal year 2008 net income moved 27 percent between its original 10-K and a later 10-K/A, and querying as of a date before versus after the amendment correctly returns the two different, both genuinely correct for their time, figures. The residual gap is narrower than originally stated, not eliminated: a concept's finer breakdown (e.g. the noncurrent-versus-current split of a debt balance) can be disclosed later than a coarser aggregate covering the same fact, and at least one real filer's shares outstanding could not be resolved under any known tag at all, both documented in `src/loaders/README.md`. Price only signals (momentum, low volatility) remain entirely free of this problem, since price history isn't restated.
 
 **Prices are cached locally rather than fetched live.** Vendor prices are pulled once and
 written to `data/raw`, then processed into `data/processed`, and all downstream code reads
@@ -242,8 +336,8 @@ quant-portfolio/
 │   │   └── README.md           # what it produces, schema, toy examples
 │   ├── loaders/
 │   │   ├── prices.py            # point in time OHLCV per CIK, done
-│   │   ├── README.md            # what it produces, schema, toy examples
-│   │   ├── fundamentals.py
+│   │   ├── fundamentals.py      # point in time EDGAR XBRL facts per CIK, done
+│   │   ├── README.md            # what each loader produces, schema, toy examples
 │   │   ├── insider.py
 │   │   └── short_interest.py
 │   ├── factors/
@@ -270,10 +364,12 @@ quant-portfolio/
 │   └── logs/                     # findings from exploratory work, kept after the notebook moves on
 ├── tests/
 │   ├── test_point_in_time.py     # pure logic only; no network calls mocked or hit
-│   └── test_prices.py            # pure logic only; no network calls mocked or hit
+│   ├── test_prices.py            # pure logic only; no network calls mocked or hit
+│   └── test_fundamentals.py      # pure logic only; no network calls mocked or hit
 └── scripts/                       # thin entry points that call into src
     ├── build_universe.py         # python -m scripts.build_universe [--refresh] [--verbose]
-    └── build_prices.py           # python -m scripts.build_prices [--refresh] [--verbose]
+    ├── build_prices.py           # python -m scripts.build_prices [--refresh] [--verbose]
+    └── build_fundamentals.py     # python -m scripts.build_fundamentals [--refresh] [--verbose]
 ```
 
 The separation between `src` and `scripts` is deliberate: `src` holds reusable, testable logic with no side effects on import, `scripts` holds short, direct entry points that call into `src` and decide what to actually run and where to save output. Exploratory or messy data investigation (inspecting a new source's structure, debugging a scrape) happens in `notebooks/` first, and only gets promoted into `src` once it's a clean, working function.
@@ -286,12 +382,12 @@ logs state the evidence behind them.
 ## Build order
 
 1. Point in time universe builder (`src/universe/point_in_time.py`, done, see its own `README.md`) plus a price loader (`src/loaders/prices.py`, done, see its own `README.md`). Validate with a trivial backtest of the S&P 500 itself, no factors yet, just to confirm the universe and price pipeline are correct.
-2. Fundamentals loader plus the five foundational factors. Build `scoring/zscore.py` and `scoring/combine.py` with missing data handling from day one.
+2. EDGAR fundamentals loader (point in time on filing date, plus shares outstanding) and the five foundational factors. Pivotal step: it unlocks eight of the 13 JKP risk-model themes, market capitalization, and the PEAD/SUE alpha candidate at once, per `notebooks/logs/factor_suite_design.md`. Build `scoring/zscore.py` and `scoring/combine.py` with missing data handling from day one.
 3. `scoring/neutralize.py`, tested against toy examples before trusting it on real data.
 4. Quantile bucket portfolio construction (simple long top fifth, short bottom fifth), plus `backtest/engine.py` and `backtest/metrics.py`, with `rebalance_freq` read from config, and a basic transaction cost model. This gives a full working loop end to end on foundational factors alone.
-5. Weekly horizon price and volume factors (short term reversal, 52 week high proximity, illiquidity, volume shock). These reuse price data already loaded in step 1, and make a weekly cadence meaningful enough to compare against monthly.
-6. Insider trading and short interest loaders, added as new factors into the existing scoring pipeline. No architecture changes needed if step 2 was built generically.
-7. `risk_model` and `optimizer` (replacing quantile bucketing with a real `cvxpy` optimization once the ranking itself is trusted). Turnover constraints and no trade bands belong here.
+5. Weekly horizon price and volume factors (short term reversal, 52 week high proximity, illiquidity, volume shock), plus the Wikipedia attention factor once its small new loader exists. These reuse price data already loaded in step 1, and make a weekly cadence meaningful enough to compare against monthly.
+6. Form 4 loader for insider trading, built in its opportunistic-only form from the start (routine trades carry essentially no alpha, see Novel alpha candidates above), plus short interest, added as new factors into the existing scoring pipeline. No architecture changes needed if step 2 was built generically. Lazy Prices can be built alongside these, since it reuses the filing-text fetch already in `src/universe/point_in_time.py`.
+7. `risk_model` and `optimizer` (replacing quantile bucketing with a real `cvxpy` optimization once the ranking itself is trusted). Turnover constraints and no trade bands belong here. Re-attach GICS sector to the universe tables beforehand, to support industry factors and sector-neutral scoring.
 8. `execution/paper_broker.py` for an ongoing paper trading loop, refining the step 4 cost model into realistic fill simulation.
 9. Reddit sentiment and earnings call evasiveness factors, once the core pipeline is proven and trusted.
 
@@ -361,5 +457,33 @@ Wikipedia and some other scraped sources return `403 Forbidden` without a real `
   itself is validated empirically, not mocked). `notebooks/exploring_loaders.ipynb` stays as
   the historical record; `src/loaders/README.md` is the usage reference; full methodology in
   `notebooks/logs/loaders_construction.md`.
-- Next concrete step: the fundamentals loader and the five foundational factors, per the
-  build order below.
+- **Factor suite design brief written** (`notebooks/logs/factor_suite_design.md`), settling
+  the architecture before factor computation begins: the risk-model-versus-alpha-model
+  distinction, the JKP 13 themes adopted as the risk-model taxonomy (see Risk model versus
+  alpha model above), and four curated novel alpha candidates (see Novel alpha candidates
+  above). Concludes that the EDGAR fundamentals loader is the pivotal next task, since it
+  unlocks eight of the 13 risk themes, PEAD/SUE, and market capitalization at once.
+- **Point in time fundamentals loader built and validated**, `src/loaders/fundamentals.py`.
+  Caches raw EDGAR XBRL `companyfacts` per CIK (`data/raw/fundamentals/{cik}.json`,
+  gitignored) and a coverage report (`data/processed/fundamentals_coverage.parquet`); point in
+  time resolution (which tag a filer uses for a concept, and which value was known as of a
+  given date) happens at query time against the cached raw file, not baked into the cache.
+  Covers all nine concepts behind the eight fundamentals-based JKP themes plus shares
+  outstanding, with two derived fallbacks (`total_liabilities_as_of`,
+  `gross_profit_as_of`) for filers that never tag those directly. Verified against real edge
+  cases: a filer using the post-2018 revenue tag instead of the older one, a filer that
+  changed which tag it used for a concept across its own filing history, a genuine 27 to 44
+  percent earnings restatement correctly excluded before its filing date, and a random
+  30-company sample of the 2020 S&P 500 measuring coverage per concept (100% for total assets
+  and shares outstanding, down to 60% for near-term debt maturities, a real filer-to-filer
+  difference not a mechanism flaw). A known, bounded gap: shares outstanding cannot be
+  resolved for at least one real filer under any alias tried so far. Side effect free on
+  import, 12 tests in `tests/test_fundamentals.py` covering the pure resolution and
+  derivation logic. `notebooks/exploring_fundamentals.ipynb` stays as the historical record;
+  `src/loaders/README.md` is the usage reference; full methodology in
+  `notebooks/logs/fundamentals_construction.md`. Market capitalization and any price scaled
+  ratio need a further split-adjustment correction that belongs in `src/factors/value.py`,
+  not in the loader itself, since cached prices are always split adjusted and a historical
+  shares-outstanding figure is not.
+- Next concrete step: the five foundational factors (momentum, value, size, quality, low
+  volatility), per the build order below.
