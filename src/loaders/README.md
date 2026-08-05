@@ -178,8 +178,14 @@ facts = load_company_facts(320193)  # Apple
 # Net income Apple had actually reported, as of a specific date, for the
 # fiscal year it later restated by 27 percent: the value known before the
 # restatement, and the value known after.
-concept_value_as_of(facts, "net_income", "USD", "2008-09-27", "2009-12-01")
-concept_value_as_of(facts, "net_income", "USD", "2008-09-27", "2010-06-01")
+concept_value_as_of(facts, "net_income", "USD", "2008-09-27", "2009-12-01", "annual")
+concept_value_as_of(facts, "net_income", "USD", "2008-09-27", "2010-06-01", "annual")
+
+# A balance sheet concept takes no period, since it describes an instant.
+concept_value_as_of(facts, "total_assets", "USD", "2020-09-26", "2020-12-01")
+
+# Shares outstanding has its own function and takes no period end at all.
+shares_outstanding_as_of(facts, "2020-12-01")
 ```
 
 **Always resolve a concept through `concept_value_as_of`, or a derived helper
@@ -188,6 +194,32 @@ directly.** Which tag a filer uses for a concept varies across filers, and can e
 across one filer's own history (see the Alphabet example below); reading one hardcoded tag
 name will silently return nothing for a filer, or a period, that happens to use a different
 one.
+
+### The `period` argument
+
+An end date does not identify an income statement or cash flow fact. Alphabet's 2021-06-30
+carries both a 90 day figure of $18,525,000,000 and a 180 day year to date figure of
+$36,455,000,000, filed on the same day, and both are correct. `period` says which is wanted:
+`"quarterly"`, `"half_year"`, `"nine_month"`, or `"annual"`.
+
+It is **required** for a concept whose facts describe a span of time and **rejected** for one
+describing a balance at an instant. `CONCEPT_KIND` records which is which:
+
+| Kind | Concepts | `period` |
+|---|---|---|
+| duration | `revenue`, `cost_of_revenue`, `net_income`, `operating_cash_flow`, `gross_profit` | required |
+| instant | `total_assets`, `total_liabilities`, `stockholders_equity`, `long_term_debt_noncurrent`, `long_term_debt_current`, `shares_outstanding` | must be omitted |
+
+Omitting it on a duration concept raises `ValueError` rather than defaulting to annual, because
+silently choosing a period is the defect the argument exists to prevent.
+
+Period type is decided by the duration of a fact as a fraction of that filer's own fiscal year,
+not by an absolute day count. A quarter runs 83 days at Costco, which divides its year into 12,
+12, 12, and 16 weeks, 89 to 91 at a calendar year filer, 97 at Apple in a 53 week year, and 111
+or 118 at Costco's fourth quarter. EDGAR's own `fp` and `form` fields cannot be used for this:
+both label the filing a fact appeared in rather than the fact, and one Costco fact appears under
+`fp` values of Q3, Q4, and FY. Full derivation and evidence in
+`notebooks/logs/fundamentals_construction.md`, Parts 14 and 15.
 
 ### Toy examples, from the real data
 
@@ -226,11 +258,28 @@ time, figures.
   balance sheet identity) when a filer has no explicit `Liabilities` tag, true for roughly a
   quarter of a random sample of S&P 500 filers checked. `gross_profit_as_of` falls back to
   revenue minus cost of revenue when a filer has no explicit `GrossProfit` tag.
-- **Some concepts are structurally unavailable for some filers, not merely unaliased.**
-  DoorDash's shares outstanding could not be resolved under any known alias, in either the
-  `dei` or `us-gaap` taxonomy; its own facts contain only a preferred share count of zero, a
-  mezzanine equity classification, and period average share counts, none of which answer the
-  question. A known, bounded gap, not yet resolved.
+- **Shares outstanding is queried differently from everything else, and is missing entirely for
+  some multi-class filers.** `shares_outstanding_as_of(facts, as_of_date)` takes no period end,
+  because neither source tag is dated to one a caller would hold:
+  `dei:EntityCommonStockSharesOutstanding` carries the cover page date, measured at 20 to 54 days
+  after the period end across the validation panel, and `us-gaap:CommonStockSharesOutstanding` is
+  dated to the period end but optional. `concept_value_as_of` raises if asked for this concept.
+  Separately, roughly 9 percent of filers have no undimensioned share count under either tag:
+  they report the figure only per share class, and the bulk `companyfacts` endpoint serves only
+  undimensioned facts. Measured at 11 of 117 cached companies, all with multiple share classes or
+  a partnership unit structure. For those, the function falls back to the period average share
+  count (`WeightedAverageNumberOfSharesOutstandingBasic`, quarterly in preference to annual),
+  which carries a median absolute error of 0.43 percent against a true count. The fallback is a
+  last resort, never pooled with genuine counts, and the returned tag names it, so callers can
+  identify the affected companies; `allow_weighted_average=False` excludes them outright. Sunoco
+  remains unresolvable, correctly: a limited partnership has units rather than shares. Full
+  reasoning, including why the SEC's Financial Statement Data Sets were investigated and rejected
+  as covering fewer filers at greater cost, is in Part 17 of the log.
+- **A share count more than 400 days old is treated as unavailable.** Four cached filers report an
+  undimensioned count for part of their history and then switch to per-class tagging, so the
+  endpoint retains an old figure and nothing after it. Without the bound, Mastercard returned a
+  2010 count of 122,530,193 against an actual figure near 905,000,000. Tune with `max_age_days`
+  if a longer horizon is genuinely wanted.
 - **Revenue does not exist as a concept for every sector.** Banks (Truist and Fifth Third
   Bancorp both came back missing revenue in a random sample) report interest and non-interest
   income instead of a generic revenue line, since the business model does not map onto one. A
@@ -241,10 +290,27 @@ time, figures.
   understates market cap by the cumulative split ratio for any company that has split its stock
   since the filing date. This module resolves fundamentals data only; the price join and its
   split adjustment correction belong in `src/factors/value.py`.
-- **Coverage has not been measured at full scale.** The alias mechanism has been checked
-  against a 30 company random sample of the 2020 S&P 500 (see
-  `notebooks/logs/fundamentals_construction.md`), not the full historical universe of roughly
-  500 to 1,000 members.
+- **Coverage has not been measured at full scale, and what has been measured is tag existence
+  rather than dated resolution.** The published per-concept figures (100% for total assets and
+  shares outstanding, down to 60% for near-term debt maturities) record whether a tag appears
+  anywhere in a filer's history, which is a weaker question than whether a dated query returns a
+  value. The samples so far are 4 hand-picked companies, 30 drawn from a single 2020 date, 18
+  chosen to be difficult, and 100 drawn at random, against a full historical universe of roughly
+  500 to 1,000 members. `build_fundamentals()` has not been run.
+- **A filer reporting under a taxonomy other than `us-gaap` returns `None` for every concept,
+  while the coverage report records `fetched: True`.** Foreign private issuers file form 20-F
+  under `ifrs-full`, often in a currency other than USD, and every entry in `TAG_ALIASES` names
+  `us-gaap` or `dei`. Two such filers have been found (CIK 888746, a Chilean brewer, and Barclays
+  Bank PLC), both reached through the universe module's known CIK misattribution rather than
+  through genuine index membership. The coverage report cannot currently distinguish "fetched and
+  usable" from "fetched and empty".
+- **Year to date and quarterly figures need not reconcile to the last dollar.** Checked across
+  the validation panel, 95.6 percent of year to date ladders balance exactly against the reported
+  quarterly figures. The remainder differ by well under one percent, from two causes: a filer
+  presenting statements in millions rounds each figure independently, so three rounded numbers
+  need not satisfy an exact identity (Meta); and a filer that revises one figure without revising
+  the others leaves the latest vintage of each mutually inconsistent (Fastenal). Any factor
+  computing a quarter over quarter change inherits this.
 
 ### Rebuilding
 
