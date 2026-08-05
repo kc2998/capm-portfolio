@@ -1279,6 +1279,64 @@ staleness bound, which is a separate, correctly unfixable case rather than evide
 alias. 10 of 853 usable companies remain unresolved, the same population reported in
 `src/loaders/README.md`.
 
+## Part 21: two limitations found while reviewing the alias fixes
+
+Dated 2026-08-05. Part 18's four aliases were each verified by date, showing the gap between a
+filer's last filing and its latest resolvable period falling from thousands of days to under 200.
+Neither was verified by value, and two of them stand in for a definitionally different quantity.
+Measured on the companies reporting both tags at the same period end, across the cached universe:
+
+| Alias pair | Companies reporting both | Median worst-case gap | Worst case above 5% |
+|---|---|---|---|
+| `StockholdersEquity` against the noncontrolling-interest-inclusive tag | 78 | 3.9% | 35 of 78 |
+| `LongTermDebtCurrent` against `DebtCurrent` | 21 | 113% | 16 of 19 |
+| `LongTermDebtCurrent` against `LongTermDebtAndCapitalLeaseObligationsCurrent` | 19 | 0.05% | 6 of 18 |
+
+The third pair is effectively the same quantity, which is what Part 18 claims for it. The other
+two are not.
+
+Equity including noncontrolling interest is total equity, not equity attributable to shareholders.
+Marsh and McLennan reported -$3,923,000,000 under the parent-only tag and +$6,872,000,000 under
+the inclusive one at the same period end. `DebtCurrent` is total current debt including commercial
+paper and short-term borrowings, not merely the current portion of long term debt: Ecolab reported
+$6,200,000 against $1,445,300,000 at the same period end.
+
+This does not make either alias wrong. Alias order means the narrower tag wins whenever a filer
+reports it, so the broader one is reached only where nothing else exists, and a slightly different
+quantity is better than none. It is the same trade already accepted for the weighted average share
+count in Part 17. The difference is that that trade was measured, bounded, and written into the
+docstring, and this one was not. The value and low-leverage themes both read these concepts, so it
+belongs in `src/loaders/README.md` alongside the others.
+
+### A filer can restate its own history in different units
+
+Found when the validation panel grew from 18 to 28 companies and the accounting identity check
+flagged a discrepancy of 99,976 percent. Harley-Davidson filed two parallel sets of facts for its
+2011 and 2012 quarters:
+
+| Filed | Period | Value |
+|---|---|---|
+| 2011-05-04 | 2011-01-01 to 2011-03-27 | 119,260,000 |
+| 2013-02-22 | 2010-12-30 to 2011-03-31 | 119,300 |
+
+In 2013 it re-reported those quarters at calendar-aligned period ends, stated in thousands rather
+than dollars. Both vintages carry the unit `USD`, so nothing in the data distinguishes them, and
+because the end dates differ by a few days the loader treats them as separate periods rather than
+as vintages of one. `latest_value_as_of` prefers the later end date, so a factor querying
+Harley-Davidson's 2011 or 2012 quarters receives a figure a thousand times too small.
+
+This is the second instance of the same class. Part 17 excluded 33 company-years from the weighted
+average share count measurement for the same reason, McDonald's tagging that figure in millions
+while its share count was in units. Neither is detectable from the unit label.
+
+Not fixed. A heuristic comparing a fact against neighboring periods for the same concept would
+catch both, but deciding that a value is implausible is a data quality judgment rather than a
+resolution rule, and this module's stated position is to return what was filed or nothing. The
+honest response for now is that it is documented, that the identity check in
+`notebooks/validating_fundamentals.ipynb` measures the share of large exceptions rather than the
+single worst one so that this case does not mask a real regression, and that a factor computing
+growth rates should expect it.
+
 ## Considerations to settle before the fixes
 
 Each of these is a decision rather than a defect, and each changes the loader's interface, so

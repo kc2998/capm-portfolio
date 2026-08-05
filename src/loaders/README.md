@@ -370,6 +370,27 @@ time, figures.
   need not satisfy an exact identity (Meta); and a filer that revises one figure without revising
   the others leaves the latest vintage of each mutually inconsistent (Fastenal). Any factor
   computing a quarter over quarter change inherits this.
+- **Two aliases stand in for a broader quantity than the tag they replace.** Where a filer stopped
+  tagging `StockholdersEquity` after ASU 2009-17, the fallback
+  `StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest` is total equity rather
+  than equity attributable to shareholders, so book value is overstated by the minority interest.
+  Measured on the 78 companies reporting both at a shared period end, the median worst-case gap is
+  3.9 percent and 35 exceed 5 percent; Marsh and McLennan reported -$3,923,000,000 under the
+  narrow tag and +$6,872,000,000 under the inclusive one on the same date. Similarly `DebtCurrent`,
+  the fallback for `long_term_debt_current`, is total current debt including commercial paper and
+  short-term borrowings: Ecolab reported $6,200,000 against $1,445,300,000 on the same date. In
+  both cases alias order means the narrower tag wins whenever a filer reports it, so the broader
+  figure is reached only where nothing else exists. The lease-inclusive debt alias is not affected,
+  agreeing to a median of 0.05 percent. Evidence in Part 21 of the log.
+- **A filer can restate its own history in different units, and nothing in the data says so.**
+  Harley-Davidson re-reported its 2011 and 2012 quarters in 2013 stated in thousands rather than
+  dollars, at period ends a few days from the originals. Both vintages carry the unit `USD`, and
+  because the end dates differ the loader treats them as separate periods rather than as vintages
+  of one, so `latest_value_as_of` prefers the later, thousand-fold smaller figure. McDonald's tags
+  its weighted average share count in millions while its share count is in units, the same
+  problem in a different concept. Not detectable from the unit label and not corrected here, since
+  judging a value implausible is a data quality decision rather than a resolution rule. A factor
+  computing growth rates should expect it.
 
 ### Rebuilding
 

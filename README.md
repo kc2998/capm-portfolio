@@ -485,9 +485,10 @@ Wikipedia and some other scraped sources return `403 Forbidden` without a real `
   shares-outstanding figure is not.
 - **Fundamentals loader validated against a fixed panel; four structural defects fixed and
   Decision B promoted.** `notebooks/validating_fundamentals.ipynb` compares candidate
-  implementations against 18 companies selected to cover filing era, fiscal calendar shape,
+  implementations against 28 companies selected to cover filing era, fiscal calendar shape,
   business model, share class structure, index status, and known tagging pathologies, plus a 100
-  company random sample. Three defects were found and fixed in period resolution: an end date
+  company random sample. The panel began at 18 and grew as each tag alias below was traced to the
+  filer that exposed it, so every fix is verified against a member the notebook itself fetches. Three defects were found and fixed in period resolution: an end date
   does not identify an income statement fact, because a quarter end carries both the three month
   figure and the year to date figure (Alphabet's second quarter of 2021 returned
   $36,455,000,000 instead of $18,525,000,000); shares outstanding was forced through a
@@ -502,7 +503,22 @@ Wikipedia and some other scraped sources return `403 Forbidden` without a real `
   stockholders' equity (ASU 2009-17) and for long term debt (ASC 842), a separate group of
   filers uses a third, unrelated current-debt tag, and revenue carried a different name before
   roughly 2013. 49 tests in `tests/test_fundamentals.py`, each fixture mirroring a named real
-  filer. Evidence in Parts 14 through 19 of `notebooks/logs/fundamentals_construction.md`.
+  filer. Evidence in Parts 14 through 21 of `notebooks/logs/fundamentals_construction.md`.
+- **Two limitations found while reviewing those alias fixes, both documented rather than
+  corrected.** Each alias was verified by date, showing a filer's latest resolvable period moving
+  from years behind its last filing to within a few months, but not by value. Two stand in for a
+  broader quantity than the tag they replace: the post-ASU 2009-17 equity tag is total equity
+  including noncontrolling interest rather than equity attributable to shareholders (median
+  worst-case gap of 3.9 percent across the 78 companies reporting both), and `DebtCurrent` is
+  total current debt rather than only the current portion of long term debt. Alias order means the
+  narrower tag wins wherever a filer reports it, so the broader figure is reached only where
+  nothing else exists, which is the same trade already accepted for the weighted average share
+  count. Separately, a filer can restate its own history in different units: Harley-Davidson
+  re-reported its 2011 and 2012 quarters in 2013 stated in thousands rather than dollars, at
+  period ends a few days from the originals, and since both vintages carry the unit `USD` nothing
+  in the data distinguishes them. McDonald's does the same with its weighted average share count.
+  Neither is detectable from the unit label; a factor computing growth rates should expect it. See
+  the log's Part 21 and the caveats in `src/loaders/README.md`.
 - Known defects still open in the fundamentals loader, all recorded with evidence under that
   log's Open items: multi-class filers with no share count under any tag, direct or averaged
   (Sunoco, a limited partnership, is the only one confirmed unrecoverable in principle); and
