@@ -84,20 +84,58 @@ def load_company_facts(cik):
 # ---------------------------------------------------------------------------
 # Tag resolution and point in time value lookup
 #
-# Which XBRL tag a filer uses for a given concept is not standardized:
-# revenue alone is reported as "Revenues" (older filers) or
-# "RevenueFromContractWithCustomerExcludingAssessedTax" (the tag introduced
-# by the 2018 ASC 606 standard), and a single filer's own choice can change
+# Which XBRL tag a filer uses for a given concept is not standardized: revenue
+# alone has carried three names in the panel's own history, "SalesRevenueNet"
+# before roughly 2013 (Harley-Davidson: 8 points, 2008-2009, then nothing;
+# 370 cached companies carry it at all), "Revenues" through 2018, and
+# "RevenueFromContractWithCustomerExcludingAssessedTax" after, the tag
+# introduced by that year's ASC 606 standard. A backtest reaching into the
+# 1990s (the project's own universe horizon) needs the first of these as much
+# as the other two. A single filer's own choice can also change
 # across its own filing history (Alphabet used "LongTermDebtNoncurrent"
 # through 2020, an undifferentiated "LongTermDebt" for 2021-2022, then
-# reverted). Aliases are therefore tried per period queried, never resolved
-# once per company and reused.
+# reverted). A standard change can also move essentially every filer at once:
+# ASU 2009-17 required noncontrolling interest to be reported as part of total
+# equity starting in fiscal 2009, and most filers responded by switching from
+# "StockholdersEquity" to "StockholdersEquityIncludingPortionAttributable-
+# ToNoncontrollingInterest" around that date and never tagging the shorter
+# name again (CSX: 4 points, all 2008-2009, under the old tag; 267 points
+# through 2026 under the new one). ASC 842, effective 2019, did the same to the
+# long term debt tags: filers folded finance lease obligations into
+# "LongTermDebtAndCapitalLeaseObligations(Current)" and stopped tagging plain
+# "LongTermDebtCurrent"/"LongTermDebtNoncurrent" (Home Depot: both plain tags
+# stop in 2017; the combined ones carry 130+ points each through 2026).
+# Independently, a large group of filers (Tyson, Danaher, Crown Castle, Trane,
+# Xylem, Skyworks, ADP, Travelers among them) never adopted the lease-inclusive
+# tag and instead tag the current portion under the shorter "DebtCurrent".
+#
+# What remains unresolved after all three current-debt aliases is not, for the
+# most part, a further missing alias. A handful are banks, insurers, asset
+# managers, and a REIT (Franklin Resources, Raymond James, Chubb, Hartford,
+# MetLife, First Horizon, Northern Trust, Ameriprise, Digital Realty) whose debt
+# is tagged by security type ("SecuredDebt", "SubordinatedDebt",
+# "ShortTermBorrowings") rather than by maturity, the same way revenue does not
+# exist as a concept for banks (see src/loaders/README.md). But most of the
+# remainder, checked by value rather than by date alone, last tagged this
+# concept at exactly 0 (Waters, ServiceNow, PayPal, DoorDash, Electronic Arts)
+# or a genuine nonzero figure that was presumably repaid with nothing since due
+# within a year (ANSYS, AutoZone, Regeneron, Take-Two). Current portion of
+# long term debt is a lumpy figure that is legitimately zero for long stretches,
+# and filers commonly tag it once and stop re-confirming the zero every
+# quarter, so no alias surfaces a fact that was never filed. Treating a stale
+# or absent value here as "probably near zero" rather than "still broken" is a
+# factor-construction decision, not a loader one: this module returns None
+# rather than guessing, per the missing-value caveat below.
+#
+# Aliases are therefore tried per period queried, never resolved once per
+# company and reused.
 # ---------------------------------------------------------------------------
 
 TAG_ALIASES = {
     "revenue": [
         ("us-gaap", "Revenues"),
         ("us-gaap", "RevenueFromContractWithCustomerExcludingAssessedTax"),
+        ("us-gaap", "SalesRevenueNet"),
     ],
     "cost_of_revenue": [
         ("us-gaap", "CostOfRevenue"),
@@ -115,6 +153,7 @@ TAG_ALIASES = {
     ],
     "stockholders_equity": [
         ("us-gaap", "StockholdersEquity"),
+        ("us-gaap", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"),
     ],
     "operating_cash_flow": [
         ("us-gaap", "NetCashProvidedByUsedInOperatingActivities"),
@@ -123,10 +162,13 @@ TAG_ALIASES = {
         ("us-gaap", "LongTermDebtNoncurrent"),
         ("us-gaap", "ConvertibleLongTermNotesPayable"),
         ("us-gaap", "LongTermDebt"),
+        ("us-gaap", "LongTermDebtAndCapitalLeaseObligations"),
     ],
     "long_term_debt_current": [
         ("us-gaap", "LongTermDebtCurrent"),
         ("us-gaap", "ConvertibleNotesPayableCurrent"),
+        ("us-gaap", "LongTermDebtAndCapitalLeaseObligationsCurrent"),
+        ("us-gaap", "DebtCurrent"),
     ],
     "gross_profit": [
         ("us-gaap", "GrossProfit"),
@@ -437,6 +479,13 @@ MAX_SHARE_COUNT_AGE_DAYS = 400
 # notebooks/logs/fundamentals_construction.md, Part 17.
 WEIGHTED_AVERAGE_SHARES_TAG = ("us-gaap", "WeightedAverageNumberOfSharesOutstandingBasic")
 
+# A minority of filers, Tyson Foods among them, never tag the basic count at all
+# and report only the diluted figure. Tried second, after the basic tag comes up
+# empty: diluted already includes the effect of options and awards and so
+# slightly overstates the true count, which is why basic is preferred whenever
+# it exists.
+DILUTED_WEIGHTED_AVERAGE_SHARES_TAG = ("us-gaap", "WeightedAverageNumberOfDilutedSharesOutstanding")
+
 
 def shares_outstanding_as_of(facts, as_of_date, max_age_days=MAX_SHARE_COUNT_AGE_DAYS,
                              allow_weighted_average=True):
@@ -513,23 +562,24 @@ def _weighted_average_shares_as_of(facts, as_of_date, oldest_allowed):
 
     Quarterly is tried before annual because it lags the valuation date by about
     three months rather than ten, which removes the repurchase-related skew
-    rather than merely shrinking it.
+    rather than merely shrinking it. The basic tag is tried in full, quarterly
+    then annual, before the diluted-only tag is tried at all, since basic is
+    preferred whenever a filer reports it.
     """
-    taxonomy, tag = WEIGHTED_AVERAGE_SHARES_TAG
-    points = facts["facts"].get(taxonomy, {}).get(tag, {}).get("units", {}).get("shares", [])
-    if not points:
-        return None
-
     year_days = annual_duration(facts)
-    for wanted in ("quarterly", "annual"):
-        eligible = [p for p in points
-                    if p["filed"] <= as_of_date
-                    and p["end"] >= oldest_allowed
-                    and p["val"] > 0
-                    and period_type(p, year_days) == wanted]
-        if eligible:
-            best = max(eligible, key=lambda p: (p["end"], p["filed"]))
-            return best["val"], best["filed"], best["form"], tag, best["end"]
+    for taxonomy, tag in (WEIGHTED_AVERAGE_SHARES_TAG, DILUTED_WEIGHTED_AVERAGE_SHARES_TAG):
+        points = facts["facts"].get(taxonomy, {}).get(tag, {}).get("units", {}).get("shares", [])
+        if not points:
+            continue
+        for wanted in ("quarterly", "annual"):
+            eligible = [p for p in points
+                        if p["filed"] <= as_of_date
+                        and p["end"] >= oldest_allowed
+                        and p["val"] > 0
+                        and period_type(p, year_days) == wanted]
+            if eligible:
+                best = max(eligible, key=lambda p: (p["end"], p["filed"]))
+                return best["val"], best["filed"], best["form"], tag, best["end"]
     return None
 
 
@@ -573,6 +623,115 @@ def gross_profit_as_of(facts, period_end, as_of_date, period):
 
 
 # ---------------------------------------------------------------------------
+# Period discovery
+#
+# Every function above needs a period end the caller supplies, but a factor at
+# a rebalance date holds 500 companies and none of their fiscal calendars:
+# Apple's year ends in late September, Costco's in late August, McKesson's in
+# March, and each shifts by a few days a year. These derive the period from
+# the filings themselves, validated in notebooks/validating_fundamentals.ipynb
+# against the fixed panel and the fixes above (cells 38-47).
+# ---------------------------------------------------------------------------
+
+# total_liabilities and gross_profit are each resolvable two ways: a direct
+# tag, or a figure derived from two other concepts (total_liabilities_as_of
+# and gross_profit_as_of above). A period counts as available if either route
+# reaches it, or a filer relying entirely on the derived route, roughly a
+# quarter of the sample for total_liabilities, would be undercounted here even
+# though the two functions above already resolve it fine (Dover Corp: no
+# direct Liabilities tag since 2009, but Assets and StockholdersEquity both
+# current, so the derived route reaches 2026).
+DERIVED_FALLBACK = {
+    "total_liabilities": ("total_assets", "stockholders_equity"),
+    "gross_profit": ("revenue", "cost_of_revenue"),
+}
+
+
+def available_periods(facts, concept, unit, as_of_date, period=None):
+    """Period end dates for which `concept` resolves, as known on `as_of_date`.
+
+    Sorted oldest first. `period` names the kind wanted for a concept describing a
+    span of time and is ignored for one describing an instant, matching
+    concept_value_as_of's contract so the two compose.
+
+    A period is included only if some fact for it had been filed by the query
+    date. That is what separates "the most recent period that has ended" from
+    "the most recent period anybody could read", and the gap between them is
+    weeks. Apple's fiscal 2021 ended 2021-09-25 and was filed 2021-10-29, so on
+    2021-10-01 the most recent available annual period is fiscal 2020. Selecting
+    on the end date instead would price a portfolio using a figure published four
+    weeks later, which is look ahead of exactly the kind that is invisible in the
+    result because the number returned looks entirely reasonable.
+
+    Only facts that concept_value_as_of would itself consider are collected, so a
+    caller never receives a period end that then resolves to None, except through
+    DERIVED_FALLBACK, where latest_value_as_of resolves the value the same way
+    total_liabilities_as_of and gross_profit_as_of do.
+    """
+    kind = CONCEPT_KIND[concept]
+    period = "instant" if kind == "instant" else period
+    year_days = None if kind == "instant" else annual_duration(facts)
+
+    ends = set()
+    for taxonomy, tag in TAG_ALIASES[concept]:
+        points = facts["facts"].get(taxonomy, {}).get(tag, {}).get("units", {}).get(unit, [])
+        for p in points:
+            if p["filed"] <= as_of_date and period_type(p, year_days) == period:
+                ends.add(p["end"])
+
+    if concept in DERIVED_FALLBACK:
+        comp_a, comp_b = DERIVED_FALLBACK[concept]
+        ends_a = set(available_periods(facts, comp_a, unit, as_of_date, period))
+        ends_b = set(available_periods(facts, comp_b, unit, as_of_date, period))
+        ends |= ends_a & ends_b
+
+    return sorted(ends)
+
+
+def latest_value_as_of(facts, concept, unit, as_of_date, period=None, offset=0):
+    """The most recent value of `concept` knowable on `as_of_date`, as
+    (val, filed, form, tag, period_end), or None.
+
+    This is the call a factor actually makes: it names a rebalance date and a
+    concept, never a fiscal period, because it does not know the filer's calendar.
+
+    `offset` steps back through the available periods, 0 being the most recent and
+    1 the one before it, which is what a growth factor comparing this year against
+    last needs. Note that it counts periods that are actually available rather
+    than calendar periods: a filer that does not tag its fourth quarter separately
+    has three quarterly periods a year, so offset=4 is not reliably "the same
+    quarter a year ago". A seasonal comparison such as PEAD should match on the
+    period end's month rather than step back a fixed count.
+
+    `period_end` is returned so the caller can see how current the answer is, the
+    same reason shares_outstanding_as_of returns it. A company that keeps filing
+    while ceasing to tag one concept will return an old period here, and nothing
+    in this function bounds that yet.
+
+    For a period reached only through DERIVED_FALLBACK, `filed` and `form` come
+    from whichever of the two components was filed later, and `tag` names both,
+    since the value comes from two facts rather than one.
+    """
+    ends = available_periods(facts, concept, unit, as_of_date, period)
+    if len(ends) <= offset:
+        return None
+
+    period_end = ends[-1 - offset]
+    got = concept_value_as_of(facts, concept, unit, period_end, as_of_date, period)
+    if got is None and concept in DERIVED_FALLBACK:
+        comp_a, comp_b = DERIVED_FALLBACK[concept]
+        a = concept_value_as_of(facts, comp_a, unit, period_end, as_of_date, period)
+        b = concept_value_as_of(facts, comp_b, unit, period_end, as_of_date, period)
+        if a is not None and b is not None:
+            later = a if a[1] >= b[1] else b
+            got = (a[0] - b[0], later[1], later[2], f"derived: {comp_a} - {comp_b}")
+    if got is None:
+        return None
+    val, filed, form, tag = got
+    return val, filed, form, tag, period_end
+
+
+# ---------------------------------------------------------------------------
 # The build: expensive, network-bound, meant to be run occasionally
 # ---------------------------------------------------------------------------
 
@@ -587,7 +746,21 @@ def build_fundamentals(force_refresh=False):
     recorded as a coverage failure rather than silently skipped, the same
     discipline the price loader applies to delisted tickers.
 
-    Returns the coverage DataFrame (`cik`, `fetched`), one row per CIK.
+    Returns the coverage DataFrame (`cik`, `fetched`, `usable`), one row per
+    CIK. `fetched` means the request succeeded; `usable` means the response
+    carries `us-gaap` facts at all, which `fetched` alone does not guarantee.
+    A foreign private issuer filing form 20-F reports under `ifrs-full`
+    instead and returns nothing for every concept in `TAG_ALIASES` despite a
+    successful fetch (two such filers found: CIK 888746, and Pacific Airport
+    Group and Lufax Holding besides, all three reached through the universe
+    module's known ticker-to-CIK misattribution rather than genuine index
+    membership). A `fetched` CIK can also hold only an unrelated, minor
+    taxonomy: CIK 2115436, a stale `ticker_history` entry for XOM predating
+    Exxon's real CIK, carries only `ffd` fee-disclosure tags and no `us-gaap`
+    or `dei` facts at all. Before this column existed, `usable` had to be
+    recomputed locally by every caller that needed it (see
+    notebooks/validating_fundamentals.ipynb, cells checking `if not
+    facts["facts"].get("us-gaap")`), which this makes unnecessary.
     """
     _, ticker_history = build_universe()
 
@@ -600,9 +773,10 @@ def build_fundamentals(force_refresh=False):
         try:
             facts = fetch_company_facts(cik)
             save_company_facts(cik, facts)
-            coverage.append({"cik": cik, "fetched": True})
+            usable = bool(facts.get("facts", {}).get("us-gaap"))
+            coverage.append({"cik": cik, "fetched": True, "usable": usable})
         except requests.HTTPError:
-            coverage.append({"cik": cik, "fetched": False})
+            coverage.append({"cik": cik, "fetched": False, "usable": False})
 
         if (i + 1) % 50 == 0:
             logger.info("%d/%d CIKs done", i + 1, len(all_ciks))

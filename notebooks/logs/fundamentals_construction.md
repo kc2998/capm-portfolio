@@ -1141,6 +1141,144 @@ Ten of the 11 filers are recovered. Sunoco remains `None`, which is correct rath
 limited partnership has units rather than shares, and a common share count is not a well defined
 quantity for it. Five tests added, taking `tests/test_fundamentals.py` to 39.
 
+## Part 18: the staleness measurement, and four tag aliases it found
+
+Dated 2026-08-04.
+
+### The staleness measurement
+
+The Decision B prototype's own staleness cell, checking every instant concept across the full
+cached universe at each company's own last filing date, found gaps up to 6,330 days. The
+`stockholders_equity` tail alone put Home Depot, CSX, Danaher, and dozens of other large,
+currently filing companies at a last known figure from 2009 to 2011. A gap that size for a
+mainstream, actively filing S&P 500 company is not staleness in the ordinary sense; it means the
+loader has stopped seeing a fact that exists.
+
+### stockholders_equity: ASU 2009-17
+
+CSX's `StockholdersEquity` tag carries 4 points, all from 2008 to mid-2009.
+`StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest`, not in `TAG_ALIASES`,
+carries 267 points through 2026-07-22. ASU 2009-17, effective fiscal 2009, required noncontrolling
+interest to be reported as part of total equity on the balance sheet; most filers responded by
+switching tags and never returned to the shorter name. Added as a second alias. Verified against
+CSX, Danaher, Home Depot, and Illinois Tool Works, each returning a period within 25 to 100 days of
+its own last filing rather than 4,000 or more.
+
+### long_term_debt_current / long_term_debt_noncurrent: ASC 842, and a second, unrelated tag
+
+Two separate causes, found by checking real values rather than trusting the percentile table alone.
+
+Home Depot, Lowe's, and DTE Energy all show every plain
+`LongTermDebtCurrent`/`LongTermDebtNoncurrent` fact stopping in 2017 to 2019, replaced by
+`LongTermDebtAndCapitalLeaseObligations(Current)`, which carries 130 or more points each through
+2026. ASC 842, effective 2019, required finance lease obligations onto the balance sheet, and this
+group of filers folded them directly into the long term debt line. Added as a fourth alias to each
+of `long_term_debt_current` and `long_term_debt_noncurrent`. `long_term_debt_noncurrent`'s 90th
+percentile gap across the full cache fell from 2,139 to 199 days after the fix.
+
+`long_term_debt_current`'s tail was only partly explained by the same fix (90th percentile fell
+from 4,030 to 2,495, a smaller improvement). A second, independent group of filers (Tyson Foods,
+Danaher, Crown Castle, Trane Technologies, Xylem, Skyworks, Travelers, Automatic Data Processing)
+never adopted the lease-inclusive tag and instead moved the current portion to the shorter
+`DebtCurrent`, unrelated to ASC 842. Added as a fifth alias.
+
+What remained after both fixes (95 companies with a gap over 400 days) was checked by value, not
+just by date, across a diverse sample. Waters, ServiceNow, PayPal, DoorDash, and Electronic Arts
+all last tagged this concept at exactly 0 and stopped re-confirming it; ANSYS, AutoZone, Regeneron,
+and Take-Two show a genuine nonzero figure that was presumably repaid with nothing due within a
+year since. Current portion of long term debt is a lumpy figure, legitimately zero for long
+stretches, and filers commonly tag it once and stop re-tagging the zero every quarter. No alias
+surfaces a fact that was never filed. A smaller remaining group (Franklin Resources, Raymond James,
+Chubb, Hartford, MetLife, First Horizon, Northern Trust, Ameriprise, Digital Realty, all banks,
+insurers, asset managers, or a REIT) tag debt by security type rather than by maturity at all, the
+same structural gap already documented for bank revenue.
+
+### revenue: SalesRevenueNet, for a horizon the loader itself set
+
+`SalesRevenueNet` was revenue's name before roughly 2013 at 370 of the cached companies, and was
+not in `TAG_ALIASES`. Harley-Davidson's 2009 second quarter revenue ($1,153,645,000, filed
+2009-07-31) is tagged only under it and was unresolvable before this fix; its 2015 figure
+($1,824,392,000, filed 2015-08-06), tagged under `Revenues`, was unaffected either way. This
+mattered specifically because the project's own universe reaches back to 1996: a point in time
+backtest at almost any pre-2013 rebalance date needs this tag as much as the two already aliased.
+
+### The usable column
+
+`build_fundamentals`'s coverage report gained a `usable` column (`us-gaap` facts present at all),
+separate from `fetched` (the request succeeded). Two more `ifrs-full` filers were found this way
+beyond the two already documented in Part 12: Pacific Airport Group (CIK 1347557) and Lufax Holding
+(CIK 1816007), both reached through the same universe-module ticker misattribution already
+responsible for the other two. A fifth `fetched: True, usable: False` case, CIK 2115436, is not
+`ifrs-full` at all: it carries only a `ffd` (fee disclosure) taxonomy, no `us-gaap` or `dei` facts
+whatsoever, and is a stale `clenow_norgate`-sourced `ticker_history` entry for `XOM` predating
+Exxon's real CIK (34088). `usable` is `False` for 14 CIKs in total; individual notebook cells had
+previously been filtering out this same set one at a time with an ad hoc check, and the coverage
+report now answers the question once. None of the five named cases represent genuine index
+membership resolvable by adding an `ifrs-full` alias table; `TAG_ALIASES` remains `us-gaap`/`dei`
+only, by design, not by gap, and the remaining nine `usable: False` CIKs have not been
+individually identified.
+
+## Part 19: Decision B, the adopted rule and promotion to src
+
+Dated 2026-08-04.
+
+### The remaining gap in the prototype
+
+`available_periods` counted a period as available only if `TAG_ALIASES[concept]` itself carried a
+fact for it, which undercounts `total_liabilities` and `gross_profit`: both already resolve through
+a derived route (`total_liabilities_as_of`, `gross_profit_as_of`) that the prototype did not know
+about. Dover Corp's `Liabilities` tag stops in 2009, but `Assets` and `StockholdersEquity` are both
+current; the derived route reaches 2026, and the prototype's own measurement was reporting Dover as
+6,140 days stale when the loader itself already answers the question.
+
+### The rule
+
+`DERIVED_FALLBACK` maps `total_liabilities` and `gross_profit` to the pair of concepts each can be
+computed from. `available_periods` unions the direct route's periods with the intersection of both
+derived components' available periods. `latest_value_as_of` tries the direct tag first, matching
+`total_liabilities_as_of`'s and `gross_profit_as_of`'s own precedence, and falls back to the derived
+route only when the direct tag has nothing for that exact period; the returned `filed`/`form` come
+from whichever of the two components was filed later, and `tag` names both, since a derived value
+comes from two facts rather than one.
+
+Verified: Dover Corp's `total_liabilities` (derived, $5,990,212,000, period ending 2026-06-30, via
+`total_assets - stockholders_equity`) and DoorDash's `gross_profit` (derived, $2,044,000,000,
+period ending 2026-03-31, via `revenue - cost_of_revenue`).
+
+### Promotion
+
+`available_periods` and `latest_value_as_of`, along with `DERIVED_FALLBACK`, moved from the
+notebook into `src/loaders/fundamentals.py`, placed after the derived-concept functions they depend
+on. 10 tests added to `tests/test_fundamentals.py` (look-ahead protection, the derived route's
+period intersection and value provenance, offset stepping, direct-tag precedence over derived),
+taking the suite to 49. The notebook's own Decision B cell no longer defines these functions
+locally; it aliases the promoted `src` versions, so the validation cells that follow, checking the
+four tag fixes above, exercise the real, shipped code rather than a parallel copy.
+
+## Part 20: Decision D, revisited at full scale
+
+Dated 2026-08-04.
+
+Part 17's 11-of-117 measurement was run against a cache that has since grown to 875 CIKs, since
+`build_fundamentals()` had never been run at scale when Part 17 was written. Re-running the same
+cell unmodified against the full cache broke: it counted 69 companies with no genuine point in
+time count rather than 11, and 14 remained unresolved by the weighted average fallback rather
+than 1, most of them not new failures at all but CIKs the wider cache had picked up that were
+never real `us-gaap` filers to begin with, two `ifrs-full` filers and one entirely unrelated
+entity reached through the misattributed `XOM` CIK (Part 18). Scoping the measurement to CIKs
+with `usable` facts (the same criterion later promoted into the coverage report) brought the
+denominator to 853 and the no-genuine-count population to 66, of which 11 resisted the fallback.
+
+One of those 11 was a genuine gap rather than a reproducibility artifact: Tyson Foods tags its
+weighted average share count only as `WeightedAverageNumberOfDilutedSharesOutstanding`, never the
+basic figure `WEIGHTED_AVERAGE_SHARES_TAG` names. Added as a second fallback tag, tried after the
+basic one, since diluted already includes the effect of options and awards and so slightly
+overstates the true count. Tyson resolves (354,000,000 shares, filed 2026-05-04); Erie Indemnity,
+which carries the same tag name, does not, its lone point dating to 2021, past the 400 day
+staleness bound, which is a separate, correctly unfixable case rather than evidence against the
+alias. 10 of 853 usable companies remain unresolved, the same population reported in
+`src/loaders/README.md`.
+
 ## Considerations to settle before the fixes
 
 Each of these is a decision rather than a defect, and each changes the loader's interface, so
@@ -1154,12 +1292,14 @@ ratio of a period's duration to the filer's own annual duration, since a quarter
 days are treated as one period tagged inconsistently, and genuinely distinct periods sharing an
 end date are settled by proximity to the canonical ratio before the filing date rule applies.
 
-**Where fiscal calendar knowledge lives.** A factor asks "the most recent known annual net
-income for these 500 CIKs on this rebalance date". Nothing currently enumerates a filer's
-periods, so the caller must already know each fiscal period end, which no factor code can
-supply. Either the loader gains a period discovery function or every factor reimplements one.
-The loader is the correct home, since this is a question about filings rather than about
-factors.
+**Where fiscal calendar knowledge lives. Settled, see Parts 18 and 19.** A factor asks "the most
+recent known annual net income for these 500 CIKs on this rebalance date". Nothing enumerated a
+filer's periods, so the caller had to already know each fiscal period end, which no factor code
+can supply. The loader is the correct home, since this is a question about filings rather than
+about factors: `available_periods` and `latest_value_as_of` now live in
+`src/loaders/fundamentals.py`. Measuring their own output at scale is what surfaced the four tag
+aliases in Part 18, a case of a validation tool finding defects beyond the one it was built to
+validate.
 
 **Whether shares outstanding leaves the period-matched interface. Settled, see Part 16.** It
 does. `shares_outstanding_as_of(facts, as_of_date)` takes no period end, pools both tags, and
@@ -1194,18 +1334,13 @@ tables, is arguably the real answer.
 
 ## Open items
 
-- The three defects in Part 13 are unfixed in `src/`. The rule that corrects the first of them
-  is settled and verified in `notebooks/validating_fundamentals.ipynb` (Part 14), but
-  `concept_value_as_of` has not yet been changed, so it still returns a year to date figure in
-  place of a quarterly one at any non-year-end period.
-- A filer using a taxonomy other than `us-gaap` returns `None` for every concept while
-  `build_fundamentals` records `fetched: True`, since the request itself succeeded. Found via
-  CIK 888746, a 20-F filer reporting under `ifrs-full` in Chilean pesos, reached through a
-  universe ticker misattribution (Part 14). Such filers should not appear in a correct S&P 500
-  universe, so the frequency depends on the universe module's open items, but the coverage
-  report currently cannot distinguish "fetched and usable" from "fetched and empty".
-- `SalesRevenueNet` is not yet in `TAG_ALIASES`, so pre-2018 revenue is unresolvable for filers
-  that used it.
+- A filer using a taxonomy other than `us-gaap` still returns `None` for every concept; only the
+  ability to detect this changed. `build_fundamentals`'s coverage report now carries `usable`
+  (Part 18), distinguishing this from a genuine fetch failure, but no `ifrs-full` alias table
+  exists or is planned, since none of the four known cases (CIK 888746, a Chilean brewer
+  reporting in `CLP`/`CLF`; Barclays Bank PLC; Pacific Airport Group; Lufax Holding) represent
+  genuine S&P 500 membership. All four are reached through the universe module's ticker
+  misattribution, so the frequency depends on that module's own open items, not on this one.
 - The shares outstanding gap has widened rather than closed. DoorDash was the original case;
   Meta reproduces it, and Part 12 establishes it as dimensional dropping affecting multi-class
   filers generally rather than a one-filer anomaly. Recovering it requires either a source that
@@ -1224,11 +1359,6 @@ tables, is arguably the real answer.
   full trading history, is correct, existing price-loader behavior, not a fundamentals-loader
   problem, but it means any fundamentals-to-price join for a given CIK is implicitly bounded to
   that CIK's membership window. Stated explicitly in `src/loaders/README.md` now.
-- `build_fundamentals()` has still never been run. `data/raw/fundamentals/` is empty, and
-  `data/processed/fundamentals_coverage.parquet` does not exist. Separately, and relevant to
-  verifying any price join, `build_prices()` has not completed either: `data/raw/prices/` holds
-  33 CIK files and `data/processed/prices_coverage.parquet` does not exist, though both this
-  file and `src/loaders/README.md` describe the coverage report as an existing artifact.
 - Coverage at scale remains unmeasured, and when it is measured it should be measured by dated
   resolution rather than by tag existence, per Part 13. The alias mechanism has now been checked
   against four hand-picked companies, a 30 company single-date sample, and a 60 company multi

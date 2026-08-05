@@ -274,7 +274,7 @@ Twitter sentiment (API access got too expensive for a free tier).
 | Reddit sentiment (later) | Reddit API (PRAW) | Free tier | |
 | Earnings transcripts (later) | Scraped or a cheap transcript API | Mostly free, some paid | Coverage gaps for smaller companies |
 
-**Known limitation, revised after building the fundamentals loader**: this section originally assumed, without checking, that free fundamentals sources generally show only current, restated financials, not the originally filed numbers as they stood on the filing date. Checked directly against EDGAR's own XBRL `companyfacts` API (`src/loaders/fundamentals.py`, full evidence in `notebooks/logs/fundamentals_construction.md`): this source retains every historical filed vintage of a fact, each tagged with its own filing date, so a genuine restatement is resolvable point in time by taking the value filed on or before the backtest date. Verified against a real case: Apple's fiscal year 2008 net income moved 27 percent between its original 10-K and a later 10-K/A, and querying as of a date before versus after the amendment correctly returns the two different, both genuinely correct for their time, figures. The residual gap is narrower than originally stated, not eliminated, and three parts of it are now measured rather than suspected. A concept's finer breakdown (e.g. the noncurrent-versus-current split of a debt balance) can be disclosed later than a coarser aggregate covering the same fact. Shares outstanding is absent entirely for multi-class filers that report the count only per share class, since EDGAR's bulk `companyfacts` endpoint serves only undimensioned facts; Meta and DoorDash are both affected, and Meta is the largest company in the validation panel, so this is not a marginal case. Foreign private issuers file form 20-F under the `ifrs-full` taxonomy rather than `us-gaap`, so every concept returns nothing while the coverage report still records a successful fetch; such filers should not appear in a US-only index and arrive through the universe module's known CIK misattribution. All three are documented in `src/loaders/README.md`. Price only signals (momentum, low volatility) remain entirely free of this problem, since price history isn't restated.
+**Known limitation, revised after building the fundamentals loader**: this section originally assumed, without checking, that free fundamentals sources generally show only current, restated financials, not the originally filed numbers as they stood on the filing date. Checked directly against EDGAR's own XBRL `companyfacts` API (`src/loaders/fundamentals.py`, full evidence in `notebooks/logs/fundamentals_construction.md`): this source retains every historical filed vintage of a fact, each tagged with its own filing date, so a genuine restatement is resolvable point in time by taking the value filed on or before the backtest date. Verified against a real case: Apple's fiscal year 2008 net income moved 27 percent between its original 10-K and a later 10-K/A, and querying as of a date before versus after the amendment correctly returns the two different, both genuinely correct for their time, figures. The residual gap is narrower than originally stated, not eliminated, and three parts of it are now measured rather than suspected. A concept's finer breakdown (e.g. the noncurrent-versus-current split of a debt balance) can be disclosed later than a coarser aggregate covering the same fact. Shares outstanding is absent entirely for multi-class filers that report the count only per share class, since EDGAR's bulk `companyfacts` endpoint serves only undimensioned facts; Meta and DoorDash are both affected, and Meta is the largest company in the validation panel, so this is not a marginal case. Foreign private issuers file form 20-F under the `ifrs-full` taxonomy rather than `us-gaap`, so every concept returns nothing; the coverage report now distinguishes this from a genuine fetch failure with a `usable` column, rather than recording only that the fetch succeeded. Four such filers are known (a Chilean brewer, Barclays Bank PLC, Pacific Airport Group, Lufax Holding), all reached through the universe module's known CIK misattribution rather than genuine US-only index membership. All three are documented in `src/loaders/README.md`. Price only signals (momentum, low volatility) remain entirely free of this problem, since price history isn't restated.
 
 **Prices are cached locally rather than fetched live.** Vendor prices are pulled once and
 written to `data/raw`, then processed into `data/processed`, and all downstream code reads
@@ -483,30 +483,38 @@ Wikipedia and some other scraped sources return `403 Forbidden` without a real `
   ratio need a further split-adjustment correction that belongs in `src/factors/value.py`,
   not in the loader itself, since cached prices are always split adjusted and a historical
   shares-outstanding figure is not.
-- **Fundamentals loader validated against a fixed panel, and one structural defect fixed.**
-  `notebooks/validating_fundamentals.ipynb` compares candidate implementations against 18
-  companies selected to cover filing era, fiscal calendar shape, business model, share class
-  structure, index status, and known tagging pathologies, plus a 100 company random sample.
-  The defect found and fixed: an end date does not identify an income statement fact, because a
-  quarter end carries both the three month figure and the year to date figure, so a quarterly
-  query silently returned the year to date value (Alphabet's second quarter of 2021 returned
-  $36,455,000,000 instead of $18,525,000,000). `concept_value_as_of` and `gross_profit_as_of`
-  now take a required `period` argument for concepts describing a span of time. Period type is
-  measured as a fraction of the filer's own fiscal year rather than in absolute days, since a
-  quarter runs 83 days at Costco, 89 to 91 at a calendar year filer, 97 at Apple in a 53 week
-  year, and 111 at Costco's fourth quarter. Verified by an accounting identity independent of
-  the classifier: 95.6% of year to date ladders balance exactly against the reported quarterly
-  figures, and every exception is presentation rounding or a filer revising one figure without
-  the others, none larger than one percent. 28 tests in `tests/test_fundamentals.py`, each
-  fixture mirroring a named real filer. Evidence in Parts 14 and 15 of
-  `notebooks/logs/fundamentals_construction.md`.
+- **Fundamentals loader validated against a fixed panel; four structural defects fixed and
+  Decision B promoted.** `notebooks/validating_fundamentals.ipynb` compares candidate
+  implementations against 18 companies selected to cover filing era, fiscal calendar shape,
+  business model, share class structure, index status, and known tagging pathologies, plus a 100
+  company random sample. Three defects were found and fixed in period resolution: an end date
+  does not identify an income statement fact, because a quarter end carries both the three month
+  figure and the year to date figure (Alphabet's second quarter of 2021 returned
+  $36,455,000,000 instead of $18,525,000,000); shares outstanding was forced through a
+  period-matched interface it does not fit, since the `dei` cover page tag carries a filing date
+  rather than a period end; and roughly 9 percent of filers report their share count only per
+  share class, recovered by a weighted average fallback with a median absolute error of 0.43
+  percent. A fourth structural gap, no way to ask for "the most recent known figure" for a
+  concept without already knowing a filer's fiscal calendar, is settled as Decision B:
+  `available_periods` and `latest_value_as_of` now derive the period from the filings
+  themselves. Measuring their own output at scale found four further tag aliases the loader was
+  missing: an accounting standard change moved most filers from one tag to another for
+  stockholders' equity (ASU 2009-17) and for long term debt (ASC 842), a separate group of
+  filers uses a third, unrelated current-debt tag, and revenue carried a different name before
+  roughly 2013. 49 tests in `tests/test_fundamentals.py`, each fixture mirroring a named real
+  filer. Evidence in Parts 14 through 19 of `notebooks/logs/fundamentals_construction.md`.
 - Known defects still open in the fundamentals loader, all recorded with evidence under that
-  log's Open items: no way to ask for "the most recent annual figure" without already knowing a
-  filer's fiscal calendar, which no factor code can supply for 500 companies; shares outstanding
-  forced through a period-matched interface it does not fit, since the `dei` cover page tag
-  carries a filing date rather than a period end; multi-class filers with no share count at all;
-  a missing `SalesRevenueNet` alias for pre-2018 filers; and the `ifrs-full` taxonomy gap
-  described above.
-- Next concrete step: the remaining fundamentals loader defects, in the order set out in that
-  log's Considerations section, since three of the five foundational factors (value, size,
-  quality) cannot be computed without shares outstanding and fiscal period discovery.
+  log's Open items: multi-class filers with no share count under any tag, direct or averaged
+  (Sunoco, a limited partnership, is the only one confirmed unrecoverable in principle); and
+  filers reporting under `ifrs-full` rather than `us-gaap`, now correctly flagged as fetched but
+  unusable rather than silently miscounted (the coverage report's `usable` column), but still
+  unparsed, since none of the four known cases (a Chilean brewer, Barclays Bank PLC, Pacific
+  Airport Group, Lufax Holding) represent genuine S&P 500 membership. Current portion of long
+  term debt being frequently and legitimately zero, and left untagged by many filers once it is,
+  is a documented characteristic of that concept rather than an open defect; see the log's Part
+  18.
+- Next concrete step: with both shares outstanding and fiscal period discovery resolved, the
+  loader-side blockers on the five foundational factors are cleared. Per the Build order above,
+  the next step is `scoring/zscore.py` and `scoring/combine.py` alongside the first of the
+  foundational factors themselves (`src/factors/value.py`, `size.py`, `quality.py`), rather than
+  further work on the fundamentals loader.

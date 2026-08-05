@@ -163,11 +163,14 @@ points, one per reporting period and filing.
 |---|---|---|
 | `cik` | Int64 | the entity |
 | `fetched` | bool | whether `companyfacts` returned data at all; `False` means no XBRL history exists for this CIK, expected for filers that delisted before EDGAR's 2009 XBRL mandate |
+| `usable` | bool | whether the response carries any `us-gaap` facts; `fetched: True, usable: False` means the request succeeded but the filer reports under a taxonomy this module does not parse (see the `ifrs-full` caveat below) |
 
 ### How to use it
 
 ```python
-from src.loaders.fundamentals import build_fundamentals, load_company_facts, concept_value_as_of
+from src.loaders.fundamentals import (
+    build_fundamentals, load_company_facts, concept_value_as_of, latest_value_as_of,
+)
 
 # Loads the existing coverage report and cached files if present; only
 # fetches from EDGAR if the coverage report is missing or force_refresh=True.
@@ -186,14 +189,18 @@ concept_value_as_of(facts, "total_assets", "USD", "2020-09-26", "2020-12-01")
 
 # Shares outstanding has its own function and takes no period end at all.
 shares_outstanding_as_of(facts, "2020-12-01")
+
+# A factor never knows a filer's fiscal period end; latest_value_as_of derives it.
+# Returns (val, filed, form, tag, period_end).
+latest_value_as_of(facts, "net_income", "USD", "2022-01-01", "annual")
 ```
 
-**Always resolve a concept through `concept_value_as_of`, or a derived helper
-(`total_liabilities_as_of`, `gross_profit_as_of`), never by reading a specific tag name
-directly.** Which tag a filer uses for a concept varies across filers, and can even change
-across one filer's own history (see the Alphabet example below); reading one hardcoded tag
-name will silently return nothing for a filer, or a period, that happens to use a different
-one.
+**Always resolve a concept through `concept_value_as_of` (if the period end is already known),
+`latest_value_as_of` (if it is not), or a derived helper (`total_liabilities_as_of`,
+`gross_profit_as_of`), never by reading a specific tag name directly.** Which tag a filer uses
+for a concept varies across filers, and can even change across one filer's own history (see the
+Alphabet and CSX examples below); reading one hardcoded tag name will silently return nothing
+for a filer, or a period, that happens to use a different one.
 
 ### The `period` argument
 
@@ -221,6 +228,35 @@ both label the filing a fact appeared in rather than the fact, and one Costco fa
 `fp` values of Q3, Q4, and FY. Full derivation and evidence in
 `notebooks/logs/fundamentals_construction.md`, Parts 14 and 15.
 
+### Period discovery: querying without a period end
+
+`concept_value_as_of` requires a `period_end`, but a factor at a rebalance date holds 500
+companies and none of their fiscal calendars: Apple's year ends in late September, Costco's in
+late August, McKesson's in March, and each shifts by a few days a year. `available_periods`
+returns every period end a concept resolves for, as of a given date, sorted oldest first;
+`latest_value_as_of` wraps it to return the most recent value directly, as `(val, filed, form,
+tag, period_end)`.
+
+Only periods already filed by the query date count as available. Apple's fiscal 2021 ended
+2021-09-25 but was not filed until 2021-10-29, so a query on 2021-10-01 sees fiscal 2020 as the
+most recent annual period, not fiscal 2021; querying on the end date instead would price a
+rebalance using a figure published four weeks later, look ahead that is invisible in the result
+because the number returned looks entirely reasonable.
+
+`offset` steps back through the periods that are actually available for that filer, not through
+calendar periods: `offset=1` is what a growth factor comparing this year against last needs, but
+a filer that does not tag its fourth quarter separately has only three quarterly periods a year,
+so `offset=4` is not reliably "the same quarter a year ago." A seasonal comparison should match
+on the period end's month instead.
+
+`total_liabilities` and `gross_profit` are resolvable through their derived route as well as
+their direct tag; a period counts as available if either reaches it. Dover Corp has tagged no
+direct `Liabilities` fact since 2009, but `Assets` and `StockholdersEquity` are both current, so
+`latest_value_as_of` still returns a current figure, tagged `"derived: total_assets -
+stockholders_equity"` rather than a single EDGAR tag name, since the value comes from two facts
+rather than one. Full derivation and evidence in `notebooks/logs/fundamentals_construction.md`,
+Parts 18 and 19.
+
 ### Toy examples, from the real data
 
 **Tag standardization, not assumed, checked.** DoorDash (CIK 1792789), which began filing
@@ -236,6 +272,17 @@ after the 2018 revenue recognition standard (ASC 606) took effect, never used th
 `LongTermDebt` figure instead for 2021 and 2022 (no noncurrent/current split that year), then
 reverted to `LongTermDebtNoncurrent` from 2023 onward. `concept_value_as_of` resolves aliases
 per period queried, not once per company, specifically because of this case.
+
+**An accounting standard change moving most filers at once, not one filer's idiosyncratic
+choice.** ASU 2009-17, effective fiscal 2009, required noncontrolling interest to be reported as
+part of total equity; most filers responded by switching tags and never returned to the shorter
+name. CSX's `StockholdersEquity` tag carries 4 points, all from 2008 to mid-2009;
+`StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest` carries 267 points
+through 2026. ASC 842, effective 2019, did the same to long term debt: Home Depot's plain
+`LongTermDebtCurrent`/`LongTermDebtNoncurrent` tags stop in 2017, replaced by
+`LongTermDebtAndCapitalLeaseObligations(Current)`, which folds in finance lease obligations.
+Both are in `TAG_ALIASES` alongside the older names, so `concept_value_as_of` reaches whichever
+one a filer actually used for the period queried.
 
 **A genuine point in time restatement, not merely a data quirk.** Apple's fiscal year 2008 net
 income was reported as $4,834,000,000 in its original 10-K (filed 2009-10-27), then restated to
@@ -266,15 +313,21 @@ time, figures.
   dated to the period end but optional. `concept_value_as_of` raises if asked for this concept.
   Separately, roughly 9 percent of filers have no undimensioned share count under either tag:
   they report the figure only per share class, and the bulk `companyfacts` endpoint serves only
-  undimensioned facts. Measured at 11 of 117 cached companies, all with multiple share classes or
-  a partnership unit structure. For those, the function falls back to the period average share
-  count (`WeightedAverageNumberOfSharesOutstandingBasic`, quarterly in preference to annual),
-  which carries a median absolute error of 0.43 percent against a true count. The fallback is a
-  last resort, never pooled with genuine counts, and the returned tag names it, so callers can
-  identify the affected companies; `allow_weighted_average=False` excludes them outright. Sunoco
-  remains unresolvable, correctly: a limited partnership has units rather than shares. Full
-  reasoning, including why the SEC's Financial Statement Data Sets were investigated and rejected
-  as covering fewer filers at greater cost, is in Part 17 of the log.
+  undimensioned facts. Measured across the full usable cache (853 companies), 66 have no genuine
+  point in time count, all with multiple share classes or a partnership unit structure. For
+  those, the function falls back to the period average share count
+  (`WeightedAverageNumberOfSharesOutstandingBasic`, quarterly in preference to annual, and
+  `WeightedAverageNumberOfDilutedSharesOutstanding` if a filer, such as Tyson Foods, tags only
+  the diluted figure), which carries a median absolute error of 0.43 percent against a true
+  count. The fallback is a last resort, never pooled with genuine counts, and the returned tag
+  names it, so callers can identify the affected companies; `allow_weighted_average=False`
+  excludes them outright. 10 remain unresolved even with the fallback: Sunoco (a limited
+  partnership; units, not shares, are not a well defined quantity to fall back to), a First Trust
+  fund, and 8 multi-class or post-acquisition-subsidiary filers (Berkshire Hathaway, Ares
+  Management, Visa, Constellation Brands, Ryan Specialty, Dell International, Level 3 Parent,
+  Erie Indemnity) with no weighted-average tag at any age. Full reasoning, including why the
+  SEC's Financial Statement Data Sets were investigated and rejected as covering fewer filers at
+  greater cost, is in Part 17 of the log; the wider-scale count is in Part 18.
 - **A share count more than 400 days old is treated as unavailable.** Four cached filers report an
   undimensioned count for part of their history and then switch to per-class tagging, so the
   endpoint retains an old figure and nothing after it. Without the bound, Mastercard returned a
@@ -290,20 +343,26 @@ time, figures.
   understates market cap by the cumulative split ratio for any company that has split its stock
   since the filing date. This module resolves fundamentals data only; the price join and its
   split adjustment correction belong in `src/factors/value.py`.
-- **Coverage has not been measured at full scale, and what has been measured is tag existence
-  rather than dated resolution.** The published per-concept figures (100% for total assets and
-  shares outstanding, down to 60% for near-term debt maturities) record whether a tag appears
-  anywhere in a filer's history, which is a weaker question than whether a dated query returns a
-  value. The samples so far are 4 hand-picked companies, 30 drawn from a single 2020 date, 18
-  chosen to be difficult, and 100 drawn at random, against a full historical universe of roughly
-  500 to 1,000 members. `build_fundamentals()` has not been run.
-- **A filer reporting under a taxonomy other than `us-gaap` returns `None` for every concept,
-  while the coverage report records `fetched: True`.** Foreign private issuers file form 20-F
-  under `ifrs-full`, often in a currency other than USD, and every entry in `TAG_ALIASES` names
-  `us-gaap` or `dei`. Two such filers have been found (CIK 888746, a Chilean brewer, and Barclays
-  Bank PLC), both reached through the universe module's known CIK misattribution rather than
-  through genuine index membership. The coverage report cannot currently distinguish "fetched and
-  usable" from "fetched and empty".
+- **`build_fundamentals()` has now been run at essentially full scale** (875 cached CIKs, 867
+  fetched, 853 usable), but what has been measured is still mostly tag existence rather than
+  dated resolution. The published per-concept figures (100% for total assets and shares
+  outstanding, down to 60% for near-term debt maturities) record whether a tag appears anywhere
+  in a filer's history, which is a weaker question than whether a dated query returns a value.
+  Current portion of long term debt is a further, distinct case: it is frequently and
+  legitimately zero, and many filers tag it once and stop re-confirming the zero every quarter,
+  so a stale or absent value there should be read as "probably near zero," not "still broken";
+  see Part 18 of the log.
+- **A filer reporting under a taxonomy other than `us-gaap` returns `None` for every concept.**
+  Foreign private issuers file form 20-F under `ifrs-full`, often in a currency other than USD,
+  and every entry in `TAG_ALIASES` names `us-gaap` or `dei`. The coverage report's `usable`
+  column now distinguishes this from a genuine fetch failure, rather than recording only
+  `fetched: True`. Four such filers are known (CIK 888746, a Chilean brewer reporting in
+  `CLP`/`CLF`; Barclays Bank PLC; Pacific Airport Group; Lufax Holding), all reached through the
+  universe module's known CIK misattribution rather than through genuine index membership. A
+  fifth `fetched: True, usable: False` case, CIK 2115436, is not `ifrs-full` at all: it carries
+  only a `ffd` fee-disclosure taxonomy, an unrelated entity reached through the same
+  misattribution mechanism for ticker `XOM`. No `ifrs-full` alias table exists or is planned;
+  none of the five represent genuine S&P 500 membership.
 - **Year to date and quarterly figures need not reconcile to the last dollar.** Checked across
   the validation panel, 95.6 percent of year to date ladders balance exactly against the reported
   quarterly figures. The remainder differ by well under one percent, from two causes: a filer

@@ -20,8 +20,10 @@ import pytest
 
 from src.loaders.fundamentals import (
     annual_duration,
+    available_periods,
     concept_value_as_of,
     gross_profit_as_of,
+    latest_value_as_of,
     load_company_facts,
     period_type,
     save_company_facts,
@@ -463,6 +465,112 @@ def test_concept_value_as_of_rejects_shares_outstanding():
     with pytest.raises(ValueError, match="shares_outstanding_as_of"):
         concept_value_as_of(shares_doc(dei_points=[count("2026-02-18", 1, "2026-02-20")]),
                             "shares_outstanding", "shares", "2025-12-31", "2026-06-01")
+
+
+# ---------------------------------------------------------------------------
+# available_periods / latest_value_as_of
+# ---------------------------------------------------------------------------
+
+def test_available_periods_only_counts_periods_already_filed():
+    # Apple's fiscal 2021 ended 2021-09-25 but was not filed until 2021-10-29.
+    # A query on 2021-10-01 must not see it yet, the same look ahead boundary
+    # concept_value_as_of enforces one period at a time.
+    facts = gaap("NetIncomeLoss", [
+        annual("2019-09-29", "2020-09-26", 100, "2020-10-30"),
+        annual("2020-09-27", "2021-09-25", 200, "2021-10-29"),
+    ])
+    assert available_periods(facts, "net_income", "USD", "2021-10-01", "annual") == ["2020-09-26"]
+    assert available_periods(facts, "net_income", "USD", "2021-10-29", "annual") == \
+        ["2020-09-26", "2021-09-25"]
+
+
+def test_available_periods_reaches_the_derived_route_for_total_liabilities():
+    # Dover Corp's real shape: no direct Liabilities tag since 2009, but Assets
+    # and StockholdersEquity both current, so the period is available through
+    # DERIVED_FALLBACK even though no Liabilities fact exists at all.
+    facts = {"facts": {"us-gaap": {
+        "Assets": {"units": {"USD": [{"end": "2020-12-31", "val": 1000, "filed": "2021-02-01", "form": "10-K"}]}},
+        "StockholdersEquity": {"units": {"USD": [{"end": "2020-12-31", "val": 300, "filed": "2021-02-01", "form": "10-K"}]}},
+    }}}
+    assert available_periods(facts, "total_liabilities", "USD", "2021-03-01") == ["2020-12-31"]
+
+
+def test_available_periods_requires_both_derived_components_at_the_same_period():
+    # One component alone cannot derive a figure, so the period is not
+    # available through the derived route until both sides describe it.
+    facts = {"facts": {"us-gaap": {
+        "Assets": {"units": {"USD": [{"end": "2020-12-31", "val": 1000, "filed": "2021-02-01", "form": "10-K"}]}},
+    }}}
+    assert available_periods(facts, "total_liabilities", "USD", "2021-03-01") == []
+
+
+def test_available_periods_derives_gross_profit_from_matching_periods_only():
+    # Mirrors gross_profit_as_of's own rule: a quarterly revenue and an annual
+    # cost of revenue must not be combined into a period describing neither.
+    facts = {"facts": {"us-gaap": {
+        "Revenues": {"units": {"USD": [
+            annual("2020-01-01", "2020-12-31", 1000, "2021-02-01"),
+            annual("2020-10-01", "2020-12-31", 250, "2021-02-01", "10-Q"),
+        ]}},
+        "CostOfRevenue": {"units": {"USD": [
+            annual("2020-01-01", "2020-12-31", 600, "2021-02-01"),
+        ]}},
+    }}}
+    assert available_periods(facts, "gross_profit", "USD", "2021-03-01", "annual") == ["2020-12-31"]
+    assert available_periods(facts, "gross_profit", "USD", "2021-03-01", "quarterly") == []
+
+
+def test_latest_value_as_of_returns_the_most_recent_period():
+    facts = gaap("NetIncomeLoss", [
+        annual("2019-01-01", "2019-12-31", 100, "2020-02-01"),
+        annual("2020-01-01", "2020-12-31", 150, "2021-02-01"),
+    ])
+    assert latest_value_as_of(facts, "net_income", "USD", "2021-06-01", "annual") == \
+        (150, "2021-02-01", "10-K", "NetIncomeLoss", "2020-12-31")
+
+
+def test_latest_value_as_of_offset_steps_back_one_period():
+    # A growth factor comparing this year against last needs offset=1.
+    facts = gaap("NetIncomeLoss", [
+        annual("2019-01-01", "2019-12-31", 100, "2020-02-01"),
+        annual("2020-01-01", "2020-12-31", 150, "2021-02-01"),
+    ])
+    got = latest_value_as_of(facts, "net_income", "USD", "2021-06-01", "annual", offset=1)
+    assert got[0] == 100 and got[4] == "2019-12-31"
+
+
+def test_latest_value_as_of_returns_none_past_the_last_available_offset():
+    facts = gaap("NetIncomeLoss", [annual("2020-01-01", "2020-12-31", 150, "2021-02-01")])
+    assert latest_value_as_of(facts, "net_income", "USD", "2021-06-01", "annual", offset=1) is None
+
+
+def test_latest_value_as_of_resolves_the_derived_route_with_provenance():
+    # Dover Corp's shape again: the returned tag names both components since
+    # the value comes from two facts rather than one, and filed/form come from
+    # whichever of the two was filed later.
+    facts = {"facts": {"us-gaap": {
+        "Assets": {"units": {"USD": [{"end": "2020-12-31", "val": 1000, "filed": "2021-02-01", "form": "10-K"}]}},
+        "StockholdersEquity": {"units": {"USD": [{"end": "2020-12-31", "val": 300, "filed": "2021-02-15", "form": "10-K/A"}]}},
+    }}}
+    got = latest_value_as_of(facts, "total_liabilities", "USD", "2021-03-01")
+    assert got == (700, "2021-02-15", "10-K/A", "derived: total_assets - stockholders_equity", "2020-12-31")
+
+
+def test_latest_value_as_of_prefers_the_direct_tag_over_the_derived_route():
+    # A period with both a direct Liabilities fact and derivable components
+    # uses the direct one, matching total_liabilities_as_of's own precedence.
+    facts = {"facts": {"us-gaap": {
+        "Liabilities": {"units": {"USD": [{"end": "2020-12-31", "val": 650, "filed": "2021-02-01", "form": "10-K"}]}},
+        "Assets": {"units": {"USD": [{"end": "2020-12-31", "val": 1000, "filed": "2021-02-01", "form": "10-K"}]}},
+        "StockholdersEquity": {"units": {"USD": [{"end": "2020-12-31", "val": 300, "filed": "2021-02-01", "form": "10-K"}]}},
+    }}}
+    got = latest_value_as_of(facts, "total_liabilities", "USD", "2021-03-01")
+    assert got == (650, "2021-02-01", "10-K", "Liabilities", "2020-12-31")
+
+
+def test_latest_value_as_of_returns_none_for_an_unreported_concept():
+    facts = {"facts": {"us-gaap": {}}}
+    assert latest_value_as_of(facts, "net_income", "USD", "2021-06-01", "annual") is None
 
 
 # ---------------------------------------------------------------------------
