@@ -1,7 +1,7 @@
 # Universe construction: findings log
 
 Record of what was learned while building the point in time S&P 500 universe in
-`notebooks/exploring_universe.ipynb`. Started 2026-07-21, last updated 2026-07-29.
+`notebooks/exploring_universe.ipynb`. Started 2026-07-21, last updated 2026-08-05.
 
 This file exists so the reasoning behind the universe builder survives outside the
 notebook. The README states the decisions; this file states the evidence, organized to
@@ -673,6 +673,87 @@ this purpose, and check `verified` before trusting it without a second look.
 | Wikipedia revision API | Yes | Yes | 2008 to present | Adopted as primary source, 2008 onward |
 | Clenow/Norgate book file | Yes (MIT repo) | Rights unconfirmed | 1996 to 2019, but retroactively relabeled from 2008 onward | Adopted for 1996 to 2008 only |
 
+## A gap found after promotion: two open ticker_history rows per CIK
+
+Found 2026-08-05, not during the original build, while validating a downstream factor
+computation (`notebooks/exploring_factors.ipynb`) against real earnings data. A random
+sample of 60 companies included one whose ticker resolved to `FNF`, but whose fundamentals
+showed a net loss of $6.654 billion for fiscal year 2023, an implausible figure for Fidelity
+National Financial, a title insurer with a market capitalization near $15 billion that year.
+
+### The cause
+
+CIK 1136893's `entityName` in EDGAR's own `companyfacts` response is "Fidelity National
+Information Services, Inc.", not Fidelity National Financial. The real event: in 2006, the
+original Fidelity National Financial, Inc. (this CIK) spun off its title insurance business
+into a new, separately incorporated company that kept the name and the ticker `FNF`, while
+the original entity renamed itself Fidelity National Information Services and adopted the
+ticker `FIS`, keeping CIK 1136893. SEC's current bulk registry confirms the split: `FNF` now
+resolves to CIK 1331875, `FIS` to CIK 1136893.
+
+`ticker_history` correctly holds evidence of both identities, but as two independent,
+unreconciled rows:
+
+| cik | ticker | start_date | end_date | source |
+|---|---|---|---|---|
+| 1136893 | FNF | 2006-11-10 | null | clenow_norgate |
+| 1136893 | FIS | 2014-05-31 | null | wikipedia_revision |
+
+The book-era row is itself a clean example of the retroactive relabeling problem from Part
+2: the raw book CSV originally carried `FIS` (today's ticker) for this 2006-era span, and
+the automated SEC filing check (accession `0000892569-07-000185`) found a 2007 filing that
+states the ticker as "FNF", correctly overriding it. Both rows are independently accurate
+for their own era. The defect is that neither the book/wiki concatenation step nor
+`ticker_on` ever compares two rows for the same CIK against each other, so both stayed open
+indefinitely, and `ticker_on` fell back to whichever row happened to sort first.
+
+### Scope, measured across the full cache
+
+Every CIK carrying more than one open ended (`end_date` null) `ticker_history` row: 286. Of
+those, 273 have both rows agreeing on the ticker once the `BASE-YYYYMM` suffix is stripped
+(for example `NKE`, `AAPL` era spans opening once in each source), harmless in practice
+regardless of which row `ticker_on` picked. The remaining 13 disagree:
+
+| CIK | Tickers | Likely event |
+|---|---|---|
+| 1136893 | FNF, FIS | 2006 spinoff, this case, confirmed above |
+| 794367 | FD, M | Federated Department Stores to Macy's, 2007, not independently confirmed |
+| 1018963 | ALT, ATI | Allegheny Technologies, exact mechanism not independently confirmed |
+| 24545 | ACCOB, TAP | Adolph Coors to Molson Coors, 2005 merger, not independently confirmed |
+| 93410 | CHV, CVX | Chevron, ticker changed around the 2001 Texaco merger, not independently confirmed |
+| 26172 | CUM, CMI | Cummins, ticker symbol change, not independently confirmed |
+| 895421 | DWD, MS | Dean Witter Discover to Morgan Stanley, 1997 merger, not independently confirmed |
+| 823768 | UW, WM | USA Waste Services acquired Waste Management Inc. and took its name, 1998, not independently confirmed |
+| 712515 | ERTS, EA | Electronic Arts, ticker symbol change, not independently confirmed |
+| 1021860 | NOI, NOV | National Oilwell to National Oilwell Varco, 2005 merger, not independently confirmed |
+| 833444 | P, TYC, JCI | Already named below: Johnson Controls / Tyco, 2016 merger, confirmed |
+| 896159 | CB, ACE, CB | Already named below: ACE Limited / Chubb, 2016 merger, confirmed |
+| 1652044, 1754301 | GOOGL/GOOG, FOXA/FOX | Already named below: monthly alternation, a different shape from this defect |
+
+Two of these, 833444 and 896159, are the same cases already on record below as casualties of
+a reverted fix attempt: the book-era row's CIK attribution is itself wrong, an unrelated,
+no longer separately tracked company's history misattributed onto the surviving entity's CIK
+by `backfill_book_cik`'s current-registry lookup. That is a different, harder defect than
+this one: FNF and FIS share one genuinely continuous CIK; old Chubb Corporation and ACE
+Limited do not.
+
+### The fix and its limit
+
+`ticker_on` now prefers the row with the latest `start_date` when more than one matches,
+rather than array order. Checked against all 13 disagreeing CIKs for a present-day query
+date, this returns the currently correct ticker in every case, including 833444 and 896159,
+since a present-day query only ever needed the most recent row regardless of whether an
+older row's CIK is itself correct.
+
+What this does not fix: a historical query date that falls inside a wrongly attributed
+book-era span (833444 or 896159, before 2014) still returns data for the wrong CIK. Nine of
+the thirteen ticker pairs above are cited from a plausible real-world event, not
+independently confirmed the way 1136893, 833444, and 896159 were. Resolving the underlying
+CIK attribution remains open, tracked below. Covered by two new tests in
+`tests/test_point_in_time.py`: one confirming the tie break picks the later row once both
+match, one confirming a query date before the second row's start still returns the single
+match unchanged.
+
 ## Open items
 
 - Resolve the 3 `confirmed_mismatch_ambiguous` entries by hand (`BCO`/Pittston is one, a
@@ -708,7 +789,11 @@ this purpose, and check `verified` before trusting it without a second look.
   alternation pattern versus resolves one that already existed continuously, is not yet
   implemented. Left as a known, documented gap rather than force a fix under time pressure;
   the price loader's own investigation is bounded by it (see that log for the practical
-  consequence).
+  consequence). Independently reconfirmed 2026-08-05 while investigating a downstream factor
+  bug: see "A gap found after promotion" above, which found both Chubb/ACE (CIK 896159) and
+  Tyco/Johnson Controls (CIK 833444) again via `ticker_history`'s ticker column, fixed
+  `ticker_on`'s read-time resolution, and left this underlying CIK attribution exactly as
+  open as it was here.
 - The same underlying phenomenon (an administrative CIK change with no real trading
   discontinuity) also surfaces through a second, distinct mechanism: `backfill_book_cik`
   resolves a book-era ticker's CIK from SEC's bulk registry as of whenever it was fetched,

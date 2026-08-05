@@ -261,6 +261,25 @@ def test_ticker_on_returns_the_ticker_in_force_on_a_date_not_the_current_one():
     assert ticker_on(history, 1075531, "2022-01-01") == "BKNG"
     assert ticker_on(history, 1075531, "2000-01-01") is None
 
+def test_ticker_on_prefers_the_most_recently_started_row_when_two_open_rows_exist():
+    # The FNF/FIS case (CIK 1136893): a book-era row for FNF, open since
+    # 2006, and a wikipedia-era row for FIS, open since 2014, both match
+    # any date from 2014 onward. Array order used to pick FNF regardless
+    # of query date; the most recent start date should win instead.
+    history = pd.DataFrame([
+        {"cik": 1136893, "ticker": "FNF", "start_date": "2006-11-10", "end_date": None},
+        {"cik": 1136893, "ticker": "FIS", "start_date": "2014-05-31", "end_date": None},
+    ])
+    assert ticker_on(history, 1136893, "2024-06-28") == "FIS"
+
+
+def test_ticker_on_still_returns_the_only_match_before_the_second_rows_start():
+    history = pd.DataFrame([
+        {"cik": 1136893, "ticker": "FNF", "start_date": "2006-11-10", "end_date": None},
+        {"cik": 1136893, "ticker": "FIS", "start_date": "2014-05-31", "end_date": None},
+    ])
+    assert ticker_on(history, 1136893, "2010-01-01") == "FNF"
+
 
 def test_apply_filing_verification_corrects_a_mismatch_and_keeps_the_original():
     ticker_history = pd.DataFrame([

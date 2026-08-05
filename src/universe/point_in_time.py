@@ -789,6 +789,22 @@ def ticker_on(ticker_history, cik, date_iso):
     its source used, which for the book era may be a retroactively applied
     later ticker (see universe_construction.md); ticker_history is what
     tracks the actual symbol in force on a given date.
+
+    When more than one row matches, the one with the latest start_date wins,
+    not array order. Found via CIK 1136893: a clenow_norgate row for FNF,
+    open since 2006-11-10 (this CIK's ticker before a 2006 spinoff renamed it
+    Fidelity National Information Services), and a wikipedia_revision row for
+    FIS, open since 2014-05-31, both matching any date from 2014 onward with
+    no rule to prefer one. Checked against the full cache: 286 CIKs carry
+    more than one open-ended row, 273 where both eras agree on the ticker
+    (harmless either way) and 13 where they disagree. Preferring the latest
+    start date resolves all 13 for a present-day query, including two,
+    ACE Limited/Chubb (CIK 896159) and Johnson Controls/Tyco (CIK 833444),
+    where the book-era row is also attributed to the wrong CIK entirely (an
+    older, unrelated company whose ticker was later inherited through a
+    merger). That deeper problem is unresolved by this function, same as
+    before: this only guarantees the *current* ticker is correct, not that
+    every historical row's CIK is.
     """
     match = ticker_history[
         (ticker_history["cik"] == cik)
@@ -797,7 +813,8 @@ def ticker_on(ticker_history, cik, date_iso):
     ]
     if match.empty:
         return None
-    return match.iloc[0]["ticker"]
+    return match.sort_values("start_date").iloc[-1]["ticker"]
+
 
 
 # ---------------------------------------------------------------------------
