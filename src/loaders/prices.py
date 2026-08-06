@@ -178,6 +178,26 @@ def load_cik_prices(cik):
 
 
 # ---------------------------------------------------------------------------
+# Point in time price lookup
+# ---------------------------------------------------------------------------
+
+def close_on_or_before(prices, ticker, as_of):
+    """Point in time close: the most recent trading day at or before as_of.
+
+    Never a later date, per the README's no-look-ahead rule. Returns None if
+    the ticker has no data at all, or as_of predates its earliest session.
+    Validated against a toy weekend-gap case and real usage across hundreds
+    of companies in notebooks/exploring_factors.ipynb, Parts 1 and 5.
+    """
+    ticker_prices = prices[prices["ticker"] == ticker].sort_index()
+    if ticker_prices.empty:
+        return None
+    as_of_ts = pd.Timestamp(as_of).tz_localize(ticker_prices.index.tz)
+    close = ticker_prices.asof(as_of_ts)["Close"]
+    return None if pd.isna(close) else close
+
+
+# ---------------------------------------------------------------------------
 # The build: expensive, network-bound, meant to be run occasionally
 # ---------------------------------------------------------------------------
 
