@@ -1,8 +1,9 @@
 """Tests for src/factors/size.py."""
 
+import math
 import pandas as pd
 
-from src.factors.size import market_cap_as_of, split_adjustment_ratio
+from src.factors.size import market_cap_as_of, split_adjustment_ratio, size_factor
 
 
 def _toy_prices():
@@ -56,3 +57,14 @@ def test_market_cap_as_of_returns_none_when_price_cannot_be_resolved():
     facts = _toy_facts()
     prices = _toy_prices()
     assert market_cap_as_of(facts, prices, "NOT_A_TICKER", "2024-06-28") is None
+
+
+def test_size_factor_is_log_of_market_cap():
+    assert size_factor(math.e) == 1.0
+    assert size_factor(1.0) == 0.0
+
+
+def test_size_factor_returns_none_for_missing_or_nonpositive_market_cap():
+    assert size_factor(None) is None
+    assert size_factor(0) is None
+    assert size_factor(-100.0) is None

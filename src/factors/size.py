@@ -8,7 +8,7 @@ since it needs the identical correction for any price-scaled ratio.
 
 Built and validated in notebooks/exploring_factors.ipynb, Parts 2 and 5.
 """
-
+import math
 import pandas as pd
 
 from src.loaders.fundamentals import shares_outstanding_as_of
@@ -50,4 +50,17 @@ def market_cap_as_of(facts, prices, ticker, as_of):
         return None
     ratio = split_adjustment_ratio(prices, ticker, shares[4])
     return shares[0] * ratio * close
+
+
+def size_factor(market_cap):
+    """Raw size factor: log market capitalization, or None if market_cap is
+    None or non-positive. A listed company's market cap should never
+    actually be zero or negative, but a None from market_cap_as_of needs
+    to propagate rather than crash math.log.
+
+    Confirmed against exact cases (Part 6): log(e) = 1.0, log(1.0) = 0.0.
+    """
+    if market_cap is None or market_cap <= 0:
+        return None
+    return math.log(market_cap)
 
