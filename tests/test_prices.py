@@ -15,6 +15,7 @@ import pytest
 
 from src.loaders.prices import (
     _classify_from_probe,
+    close_on_or_before,
     load_cik_prices,
     save_cik_prices,
     to_yfinance_ticker,
@@ -117,3 +118,35 @@ def test_load_cik_prices_returns_none_when_not_cached(tmp_path, monkeypatch):
     monkeypatch.setattr("src.loaders.prices.PRICES_RAW_DIR", tmp_path)
 
     assert load_cik_prices(123456789) is None
+
+
+# ---------------------------------------------------------------------------
+# close_on_or_before
+# ---------------------------------------------------------------------------
+
+def _prices(ticker, dates, closes):
+    index = pd.DatetimeIndex(dates, tz="America/New_York")
+    return pd.DataFrame({"ticker": ticker, "Close": closes}, index=index)
+
+
+def test_close_on_or_before_returns_the_exact_days_close():
+    prices = _prices("XYZ", ["2024-01-05", "2024-01-08"], [10.0, 11.0])
+    assert close_on_or_before(prices, "XYZ", "2024-01-08") == 11.0
+
+
+def test_close_on_or_before_falls_back_to_the_prior_session_across_a_weekend():
+    # 2024-01-05 is a Friday, 2024-01-08 the following Monday; a Sunday
+    # query must land on Friday's close, never look ahead to Monday's.
+    prices = _prices("XYZ", ["2024-01-05", "2024-01-08"], [10.0, 11.0])
+    assert close_on_or_before(prices, "XYZ", "2024-01-07") == 10.0
+
+
+def test_close_on_or_before_returns_none_before_the_tickers_first_session():
+    prices = _prices("XYZ", ["2024-01-05"], [10.0])
+    assert close_on_or_before(prices, "XYZ", "2024-01-01") is None
+
+
+def test_close_on_or_before_returns_none_for_a_ticker_not_present():
+    prices = _prices("XYZ", ["2024-01-05"], [10.0])
+    assert close_on_or_before(prices, "ABC", "2024-01-05") is None
+
