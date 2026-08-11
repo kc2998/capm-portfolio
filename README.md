@@ -130,23 +130,27 @@ covariance, exactly the property a risk model needs:
 | Short term reversal | Negative of last month return | Daily prices | Yes |
 | Low risk | Volatility, beta, idiosyncratic volatility | Daily prices | Yes |
 | Seasonality | Same calendar month historical return | Daily prices | Yes |
-| Size | Log market capitalization | Price and shares outstanding | Partial, needs shares outstanding |
-| Value | Book, earnings, cash flow, or sales to price | Fundamentals | No, needs fundamentals loader |
-| Profitability | Gross profits to assets, return on equity | Fundamentals | No |
-| Quality | Composite of profitability, stability, safety | Fundamentals | No |
-| Profit growth | Change in earnings or profitability | Fundamentals | No |
-| Investment | Asset growth | Fundamentals | No |
-| Accruals | Non-cash component of earnings | Fundamentals | No |
-| Debt issuance | Net debt issuance | Fundamentals | No |
-| Low leverage | Debt to equity, book leverage | Fundamentals | No |
+| Size | Log market capitalization | Price and shares outstanding | Yes |
+| Value | Book, earnings, cash flow, or sales to price | Fundamentals | Yes |
+| Profitability | Gross profits to assets, return on equity | Fundamentals | Yes |
+| Quality | Composite of profitability, stability, safety | Fundamentals | Yes, every ingredient is cached; not yet assembled into one composite |
+| Profit growth | Change in earnings or profitability | Fundamentals | Yes, via `latest_value_as_of`'s `offset` argument |
+| Investment | Asset growth | Fundamentals | Yes, via `offset` on `total_assets`, the same mechanism as profit growth |
+| Accruals | Non-cash component of earnings | Fundamentals | Yes, from `net_income`, `operating_cash_flow`, and `total_assets`, all cached |
+| Debt issuance | Net debt issuance | Fundamentals | Partial: a debt-level-change proxy is buildable from the cached debt tags; the literal financing-cash-flow figure needs a new tag alias |
+| Low leverage | Debt to equity, book leverage | Fundamentals | Yes |
 
 A complete risk model also needs a market factor, industry factors (GICS), and a per-stock
 specific-risk term. GICS sector was dropped when the universe was promoted into `src/`: it
 exists in the cached snapshots but not in `universe_spans` or `ticker_history`, and will need
 to be re-attached before industry factors or sector-neutral scoring are possible, see the
-universe log's open items. Eight of the 13 themes are fundamentals based, so a full 13-theme
-risk model is gated on the EDGAR fundamentals loader and on shares outstanding. Only five
-themes are buildable from price and volume data alone.
+universe log's open items. The "gated on the fundamentals loader" framing this table originally
+carried is now stale: the loader exists (`src/loaders/fundamentals.py`), and `latest_value_as_of`'s
+`offset` argument, built and tested for exactly this, handles the period-over-period comparisons
+Profit growth and Investment need on any already-cached concept. 12 of the 13 themes are fully
+buildable from what's cached today; Debt issuance's precise definition is the one remaining gap,
+and even that has a usable proxy in the meantime. What remains is engineering the factor
+computations themselves (`src/factors/`), not further loader work.
 
 The Open Source Asset Pricing project (Chen and Zimmermann, 2022, "Open Source Cross-Sectional
 Asset Pricing", Critical Finance Review) is used as a definitional reference. It publishes open
@@ -189,9 +193,10 @@ described under Factor selection below.
 ## Factor selection
 
 Factors are grouped by the frequency at which their underlying information genuinely
-refreshes. This is a build-order and rebalance-cadence grouping, distinct from the risk-model
-theme taxonomy above: a factor contributes new information only when its inputs change, so this
-grouping determines which cadences are meaningful and which merely generate turnover.
+refreshes. This is a rebalance-cadence grouping, distinct from both the risk-model theme
+taxonomy above and the Build order below: a factor contributes new information only when its
+inputs change, so this grouping determines which cadences are meaningful and which merely
+generate turnover, independent of the order any of this actually gets built in.
 
 **Weekly horizon: price and volume only.** These require no fundamentals, carry no filing
 lag, and are not subject to restatement, which makes them both the cheapest factors to build
@@ -224,6 +229,7 @@ coefficient before it is built into the pipeline.
 | Momentum | Trailing 12 month return, excluding the most recent month | Daily prices |
 | Low volatility | Trailing standard deviation of returns | Daily prices |
 | Size | Log of market cap | Market cap |
+| Seasonality | Average historical return in this ticker's history for the current calendar month | Daily prices |
 | Insider buying, standard window | Net insider buying over trailing 90 days, divided by market cap | SEC EDGAR Form 4 filings |
 
 **Quarterly horizon: filing driven.** These are anchored to reporting periods and cannot
@@ -232,7 +238,13 @@ refresh faster than companies file.
 | Factor | Computation | Data needed |
 |---|---|---|
 | Value | Earnings to price or book to price ratio | Fundamentals |
-| Quality | Return on equity or debt to equity | Fundamentals |
+| Quality | Composite of profitability, stability, and safety. Currently built (`src/factors/quality.py`) as return on equity alone, which more precisely matches Profitability's own characteristic below; a genuine composite is future work | Fundamentals |
+| Profitability | Gross profits to assets, return on equity | Fundamentals |
+| Profit growth | Change in earnings or profitability | Fundamentals |
+| Investment | Asset growth | Fundamentals |
+| Accruals | Non-cash component of earnings | Fundamentals |
+| Debt issuance | Net debt issuance | Fundamentals |
+| Low leverage | Debt to equity, book leverage | Fundamentals |
 | Earnings call evasiveness | Hedging language detection or response length vs question length in the Q&A section | Scraped earnings call transcripts |
 
 Value is only partly static between filings. The earnings term is fixed until the next
@@ -249,12 +261,6 @@ Sentiment decays over days and will retain little value in a weekly or slower sy
 a genuine tension rather than an oversight. It can be resolved either by accepting the
 degradation or by running a faster sleeve alongside the slower one, and the decision is
 deferred until the core pipeline is proven.
-
-**Build order within factors.** The five foundational factors (momentum, value, size,
-quality, low volatility) are built first regardless of horizon, since they establish the
-scoring pipeline. The weekly horizon price and volume factors follow, since they reuse the
-same price data already loaded. Insider and short interest come next, and sentiment and
-earnings call analysis last.
 
 Other ideas considered and intentionally deprioritized for now: options skew (rough free data
 access), supply chain lead lag (bigger build, needs entity extraction from 10-Ks first),
@@ -384,19 +390,20 @@ logs state the evidence behind them.
 1. Point in time universe builder (`src/universe/point_in_time.py`, done, see its own `README.md`) plus a price loader (`src/loaders/prices.py`, done, see its own `README.md`). Validate with a trivial backtest of the S&P 500 itself, no factors yet, just to confirm the universe and price pipeline are correct.
 2. EDGAR fundamentals loader (point in time on filing date, plus shares outstanding) and the five foundational factors. Pivotal step: it unlocks eight of the 13 JKP risk-model themes, market capitalization, and the PEAD/SUE alpha candidate at once, per `notebooks/logs/factor_suite_design.md`. Build `scoring/zscore.py` and `scoring/combine.py` with missing data handling from day one.
 3. `scoring/neutralize.py`, tested against toy examples before trusting it on real data.
-4. Quantile bucket portfolio construction (simple long top fifth, short bottom fifth), plus `backtest/engine.py` and `backtest/metrics.py`, with `rebalance_freq` read from config, and a basic transaction cost model. This gives a full working loop end to end on foundational factors alone.
-5. Weekly horizon price and volume factors (short term reversal, 52 week high proximity, illiquidity, volume shock), plus the Wikipedia attention factor once its small new loader exists. These reuse price data already loaded in step 1, and make a weekly cadence meaningful enough to compare against monthly.
-6. Form 4 loader for insider trading, built in its opportunistic-only form from the start (routine trades carry essentially no alpha, see Novel alpha candidates above), plus short interest, added as new factors into the existing scoring pipeline. No architecture changes needed if step 2 was built generically. Lazy Prices can be built alongside these, since it reuses the filing-text fetch already in `src/universe/point_in_time.py`.
-7. `risk_model` and `optimizer` (replacing quantile bucketing with a real `cvxpy` optimization once the ranking itself is trusted). Turnover constraints and no trade bands belong here. Re-attach GICS sector to the universe tables beforehand, to support industry factors and sector-neutral scoring.
-8. `execution/paper_broker.py` for an ongoing paper trading loop, refining the step 4 cost model into realistic fill simulation.
-9. Reddit sentiment and earnings call evasiveness factors, once the core pipeline is proven and trusted.
+4. Remaining price-only JKP themes and related price and volume ideas: short term reversal, seasonality, 52 week high proximity, illiquidity, volume shock, plus the Wikipedia attention novel alpha candidate once its small new loader exists. All reuse price data already loaded in step 1, no new architecture needed.
+5. Remaining fundamentals-based JKP themes: profitability (its own factor, distinct from quality), profit growth, investment, accruals, low leverage, plus a debt-level-change proxy for debt issuance. Per the Risk model versus alpha model table above, all of these are buildable from what `fundamentals.py` already caches, profit growth and investment via `latest_value_as_of`'s `offset` argument on already-cached concepts; only debt issuance's precise, financing-cash-flow-based definition needs a new tag alias. Re-attach GICS sector to the universe tables here too, needed for sector-neutral scoring and any industry-relative work later.
+6. Form 4 loader for insider trading, built in its opportunistic-only form from the start (routine trades carry essentially no alpha, see Novel alpha candidates above), plus short interest, added as new factors into the existing scoring pipeline. No architecture changes needed, since step 2's scoring pipeline was built generically. Lazy Prices can be built alongside these, since it reuses the filing-text fetch already in `src/universe/point_in_time.py`.
+7. Reddit sentiment and earnings call evasiveness factors, last among the factor-building steps, once the rest of the factor universe above is built and understood.
+8. Beta, `configs/factors.yaml`, quantile bucket portfolio construction (simple long top fifth, short bottom fifth), `backtest/engine.py`, `backtest/metrics.py`, and a basic transaction cost model. This gives a full working loop end to end, and is deliberately the point where information coefficient first gets measured, one comprehensive pass across the complete factor set built in steps 2 through 7, not a piecemeal screen applied factor by factor while still building the set. Screening each candidate against IC as it's added would itself be a form of the multiple-testing bias the factor-zoo discipline above warns about: each "does this look good enough to keep" decision is another look at the same data. Measuring everything at once, built from theory and documented literature rather than from iterative peeking, is the more disciplined order.
+9. `risk_model` and `optimizer` (replacing quantile bucketing with a real `cvxpy` optimization once the ranking itself is trusted). Turnover constraints and no trade bands belong here.
+10. `execution/paper_broker.py` for an ongoing paper trading loop, refining step 8's cost model into realistic fill simulation.
 
-The transaction cost model appears at step 4 rather than alongside execution, which is where
+The transaction cost model appears at step 8 rather than alongside execution, which is where
 it would naturally sit. The reason is that cost determines whether a faster rebalance cadence
 is worth anything. At monthly frequency costs are a refinement; at weekly frequency the
 difference between gross and net return is the entire result, and the optimizer property
 described above, whereby trading frequency follows from the economics, does not hold without
-a cost term. A crude estimate in basis points per unit of turnover is sufficient at step 4.
+a cost term. A crude estimate in basis points per unit of turnover is sufficient at step 8.
 It only needs to exist before any faster cadence result is believed.
 
 ## Environment setup
