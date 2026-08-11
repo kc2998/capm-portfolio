@@ -390,20 +390,20 @@ logs state the evidence behind them.
 1. Point in time universe builder (`src/universe/point_in_time.py`, done, see its own `README.md`) plus a price loader (`src/loaders/prices.py`, done, see its own `README.md`). Validate with a trivial backtest of the S&P 500 itself, no factors yet, just to confirm the universe and price pipeline are correct.
 2. EDGAR fundamentals loader (point in time on filing date, plus shares outstanding) and the five foundational factors. Pivotal step: it unlocks eight of the 13 JKP risk-model themes, market capitalization, and the PEAD/SUE alpha candidate at once, per `notebooks/logs/factor_suite_design.md`. Build `scoring/zscore.py` and `scoring/combine.py` with missing data handling from day one.
 3. `scoring/neutralize.py`, tested against toy examples before trusting it on real data.
-4. Remaining price-only JKP themes and related price and volume ideas: short term reversal, seasonality, 52 week high proximity, illiquidity, volume shock, plus the Wikipedia attention novel alpha candidate once its small new loader exists. All reuse price data already loaded in step 1, no new architecture needed.
-5. Remaining fundamentals-based JKP themes: profitability (its own factor, distinct from quality), profit growth, investment, accruals, low leverage, plus a debt-level-change proxy for debt issuance. Per the Risk model versus alpha model table above, all of these are buildable from what `fundamentals.py` already caches, profit growth and investment via `latest_value_as_of`'s `offset` argument on already-cached concepts; only debt issuance's precise, financing-cash-flow-based definition needs a new tag alias. Re-attach GICS sector to the universe tables here too, needed for sector-neutral scoring and any industry-relative work later.
-6. Form 4 loader for insider trading, built in its opportunistic-only form from the start (routine trades carry essentially no alpha, see Novel alpha candidates above), plus short interest, added as new factors into the existing scoring pipeline. No architecture changes needed, since step 2's scoring pipeline was built generically. Lazy Prices can be built alongside these, since it reuses the filing-text fetch already in `src/universe/point_in_time.py`.
-7. Reddit sentiment and earnings call evasiveness factors, last among the factor-building steps, once the rest of the factor universe above is built and understood.
-8. Beta, `configs/factors.yaml`, quantile bucket portfolio construction (simple long top fifth, short bottom fifth), `backtest/engine.py`, `backtest/metrics.py`, and a basic transaction cost model. This gives a full working loop end to end, and is deliberately the point where information coefficient first gets measured, one comprehensive pass across the complete factor set built in steps 2 through 7, not a piecemeal screen applied factor by factor while still building the set. Screening each candidate against IC as it's added would itself be a form of the multiple-testing bias the factor-zoo discipline above warns about: each "does this look good enough to keep" decision is another look at the same data. Measuring everything at once, built from theory and documented literature rather than from iterative peeking, is the more disciplined order.
-9. `risk_model` and `optimizer` (replacing quantile bucketing with a real `cvxpy` optimization once the ranking itself is trusted). Turnover constraints and no trade bands belong here.
-10. `execution/paper_broker.py` for an ongoing paper trading loop, refining step 8's cost model into realistic fill simulation.
+4. Remaining price-only JKP themes and related price and volume ideas: short term reversal, seasonality, 52 week high proximity, illiquidity, volume shock. All reuse price data already loaded in step 1, no new architecture needed. Done.
+5. Remaining fundamentals-based JKP themes: profitability (its own factor, distinct from quality), profit growth, investment, accruals, low leverage, plus a debt-level-change proxy for debt issuance (its precise, financing-cash-flow-based definition needs a new tag alias, deferred, see the factor's own docstring). Done: all 13 JKP themes are now built and tested.
+6. Beta, `configs/factors.yaml`, quantile bucket portfolio construction (simple long top fifth, short bottom fifth), `backtest/engine.py`, `backtest/metrics.py`, and a basic transaction cost model. This gives a full working loop end to end, and is deliberately the point where information coefficient first gets measured, one comprehensive pass across the complete 13-theme factor set plus the weekly-horizon alpha candidates, not a piecemeal screen applied factor by factor while still building the set. Screening each candidate against IC as it's added would itself be a form of the multiple-testing bias the factor-zoo discipline above warns about: each "does this look good enough to keep" decision is another look at the same data. Measuring everything at once, built from theory and documented literature rather than from iterative peeking, is the more disciplined order. Moved ahead of the novel alpha candidates (steps 9 and 10 below), deliberately: the point of this step is to find out whether the factor suite already built has real trading power before investing further in new signal research, rather than building an ever larger candidate set with no working measurement loop to judge any of it against.
+7. `risk_model` and `optimizer` (replacing quantile bucketing with a real `cvxpy` optimization once the ranking itself is trusted). Turnover constraints and no trade bands belong here. Re-attach GICS sector to the universe tables beforehand, needed for industry factors and sector-neutral scoring, since that's the constraint layer that actually consumes it.
+8. `execution/paper_broker.py` for an ongoing paper trading loop, refining step 6's cost model into realistic fill simulation.
+9. Form 4 loader for insider trading, built in its opportunistic-only form from the start (routine trades carry essentially no alpha, see Novel alpha candidates above), plus short interest, added as new factors into the existing scoring pipeline. No architecture changes needed, since step 2's scoring pipeline was built generically. Lazy Prices can be built alongside these, since it reuses the filing-text fetch already in `src/universe/point_in_time.py`. Wikipedia attention belongs here too, once its own small new loader exists, rather than with the weekly horizon factors in step 4, since it needs new loader work the rest of that step didn't. Paused until steps 6 through 8 are done and the core 13-theme system's real trading power is understood; picked back up afterward, informed by what that measurement actually shows rather than decided ahead of it.
+10. Reddit sentiment and earnings call evasiveness factors, last, once the rest of the factor universe is built and understood, same reasoning as step 9.
 
-The transaction cost model appears at step 8 rather than alongside execution, which is where
+The transaction cost model appears at step 6 rather than alongside execution, which is where
 it would naturally sit. The reason is that cost determines whether a faster rebalance cadence
 is worth anything. At monthly frequency costs are a refinement; at weekly frequency the
 difference between gross and net return is the entire result, and the optimizer property
 described above, whereby trading frequency follows from the economics, does not hold without
-a cost term. A crude estimate in basis points per unit of turnover is sufficient at step 8.
+a cost term. A crude estimate in basis points per unit of turnover is sufficient at step 6.
 It only needs to exist before any faster cadence result is believed.
 
 ## Environment setup
@@ -536,8 +536,45 @@ Wikipedia and some other scraped sources return `403 Forbidden` without a real `
   term debt being frequently and legitimately zero, and left untagged by many filers once it is,
   is a documented characteristic of that concept rather than an open defect; see the log's Part
   18.
-- Next concrete step: with both shares outstanding and fiscal period discovery resolved, the
-  loader-side blockers on the five foundational factors are cleared. Per the Build order above,
-  the next step is `scoring/zscore.py` and `scoring/combine.py` alongside the first of the
-  foundational factors themselves (`src/factors/value.py`, `size.py`, `quality.py`), rather than
-  further work on the fundamentals loader.
+- **Scoring pipeline complete**: `scoring/zscore.py` (winsorize at the 1st/99th percentile
+  before a standard z-score, based on an empirical check of real earnings-yield data showing no
+  outlier disconnected from its neighbors once two real bugs, described below, were fixed),
+  `scoring/combine.py` (weighted average dropping and renormalizing on a missing factor rather
+  than substituting zero), and `scoring/neutralize.py` (regresses the combined score against
+  beta and ranks the residual, refit fresh at every rebalance date). All three validated against
+  toy cases with hand-derivable answers; `notebooks/exploring_factors.ipynb` is the historical
+  record.
+- **Two real bugs found and fixed while building the factor suite, not assumed away.**
+  `ticker_on` (`src/universe/point_in_time.py`) resolved an ambiguous CIK by array order rather
+  than by recency, misattributing a company's current ticker in 286 `ticker_history` rows; fixed
+  to prefer the most recently started matching row. Scope measured, not assumed: 273 of those
+  rows were harmless (both eras agreed on the ticker), 13 genuinely ambiguous, two of them the
+  same Chubb/ACE and Tyco/JCI cases already known from a previously reverted fix attempt; full
+  breakdown in `notebooks/logs/universe_construction.md`. `market_cap_as_of`
+  (`src/factors/size.py`) silently understated market cap for any company that split its stock
+  between a filing and the query date, since cached prices are always adjusted to whenever they
+  were fetched and a filed share count never is; fixed with `split_adjustment_ratio`, confirmed
+  against CMG (a real 50-for-1 split before the query date) and ORLY (a split chronologically
+  after it, which still corrupted the naive result).
+- **All 13 JKP risk-model themes built and tested**, plus three additional weekly-horizon alpha
+  candidates from the Factor selection table (`short_term_reversal_factor` is also one of the
+  13; `high_proximity_factor`, `volume_shock_factor`, and `illiquidity_factor` are not):
+  `src/factors/{size,value,quality,momentum,low_vol,short_term_reversal,seasonality,
+  high_proximity,volume_shock,illiquidity,profitability,profit_growth,investment,accruals,
+  leverage,debt_issuance}.py`, 16 modules, each validated against a toy case with a known answer
+  and a real 60-company sample before promotion. Several real-data checks caught genuine,
+  independently confirmable events along the way, not data defects: Home Depot's real 832% ROE
+  from thin book equity, FedEx's real single-day earnings rally, Broadcom's real asset jump from
+  completing its VMware acquisition, among others. `debt_issuance_factor` is a proxy (balance
+  change, not the literature's cash-flow-statement definition); the precise version needs a new
+  tag alias, deferred until it's known whether the proxy is even worth refining.
+  `notebooks/panel.py` factors the 28-company known-hard-case panel out of
+  `validating_fundamentals.ipynb`, shared with `exploring_factors.ipynb` so factor code gets
+  checked against the same documented edge cases a random sample could go a long time without
+  hitting.
+- Next concrete step: per the Build order above, novel alpha research (Form 4 insider trading,
+  Lazy Prices, Wikipedia attention, sentiment, earnings call evasiveness) is deliberately paused.
+  The next step is beta, `configs/factors.yaml`, quantile bucket construction,
+  `backtest/engine.py`, `backtest/metrics.py`, and a basic transaction cost model: one
+  comprehensive information coefficient pass across the complete 13-theme factor set, to find out
+  whether it has real trading power before investing further in new signal research.
