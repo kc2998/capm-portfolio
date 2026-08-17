@@ -189,6 +189,7 @@ TAG_ALIASES = {
 SHARES_OUTSTANDING_TAGS = [
     ("dei", "EntityCommonStockSharesOutstanding"),
     ("us-gaap", "CommonStockSharesOutstanding"),
+    ("us-gaap", "CommonStockSharesIssued"),
 ]
 
 
@@ -486,6 +487,30 @@ WEIGHTED_AVERAGE_SHARES_TAG = ("us-gaap", "WeightedAverageNumberOfSharesOutstand
 # it exists.
 DILUTED_WEIGHTED_AVERAGE_SHARES_TAG = ("us-gaap", "WeightedAverageNumberOfDilutedSharesOutstanding")
 
+def _drop_uncorroborated_within_filing(candidates, max_ratio=5):
+    """Drop a candidate that disagrees by more than max_ratio with another
+    tag from the exact same accession (the same filing). Same-filing tags
+    describe one moment, so a large disagreement there is a filer error,
+    never a legitimate split, which no single filing can straddle.
+    """
+    by_accn = {}
+    for point, tag in candidates:
+        by_accn.setdefault(point["accn"], []).append((point, tag))
+
+    kept = []
+    for group in by_accn.values():
+        if len(group) == 1:
+            kept.extend(group)
+            continue
+        values = [p["val"] for p, _ in group]
+        kept.extend(
+            (p, t) for p, t in group
+            if any(max(p["val"], v) / min(p["val"], v) <= max_ratio for v in values if v is not p["val"])
+        )
+    return kept
+
+
+
 
 def shares_outstanding_as_of(facts, as_of_date, max_age_days=MAX_SHARE_COUNT_AGE_DAYS,
                              allow_weighted_average=True):
@@ -547,6 +572,8 @@ def shares_outstanding_as_of(facts, as_of_date, max_age_days=MAX_SHARE_COUNT_AGE
                        if p["filed"] <= as_of_date
                        and p["end"] >= oldest_allowed
                        and p["val"] > 0]
+    
+    candidates = _drop_uncorroborated_within_filing(candidates)
     if candidates:
         point, tag = max(candidates, key=lambda pair: (pair[0]["end"], pair[0]["filed"]))
         return point["val"], point["filed"], point["form"], tag, point["end"]
