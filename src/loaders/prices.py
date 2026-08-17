@@ -197,6 +197,29 @@ def close_on_or_before(prices, ticker, as_of):
     return None if pd.isna(close) else close
 
 
+def next_open_after(prices, ticker, as_of):
+    """Point in time open: the next trading session's open strictly after as_of.
+
+    The execution-timing counterpart to close_on_or_before. A signal is
+    computed from the close on or before the rebalance date, but per the
+    README's no-lookahead rule, an order can't execute at that same
+    session's close, since the close isn't known until the session ends;
+    it executes at the following session's open instead. Returns None if
+    the ticker has no data at all, or as_of is at or after its last session.
+    Validated against a toy weekend-gap case and real usage in
+    notebooks/exploring_backtest.ipynb, Part 8.
+    """
+    ticker_prices = prices[prices["ticker"] == ticker].sort_index()
+    if ticker_prices.empty:
+        return None
+    as_of_ts = pd.Timestamp(as_of).tz_localize(ticker_prices.index.tz)
+    window = ticker_prices.loc[ticker_prices.index > as_of_ts]
+    if window.empty:
+        return None
+    open_price = window.iloc[0]["Open"]
+    return None if pd.isna(open_price) else open_price
+
+
 # ---------------------------------------------------------------------------
 # The build: expensive, network-bound, meant to be run occasionally
 # ---------------------------------------------------------------------------

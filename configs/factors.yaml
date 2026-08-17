@@ -1,0 +1,31 @@
+# Rebalance cadence, a pandas frequency string consumed by backtest/engine.py.
+# ME (month end) here as a representative starting point: most of the suite
+# is monthly or quarterly horizon, and per the README's Rebalance frequency
+# section, weekly vs semi-monthly vs monthly gets compared empirically, net
+# of transaction costs, once the pipeline runs end to end, not decided here.
+rebalance_freq: "ME"
+
+# Equal weight across all sixteen, deliberately, not fit or optimized:
+# weighting by a factor's own measured performance before that performance
+# has ever been measured would be circular, and doing it from the same pass
+# meant to measure IC would be exactly the data snooping the factor-zoo
+# discipline section warns against. This is the starting point for the first
+# comprehensive IC pass (Build order step 6), to be revisited only through
+# purged cross validation afterward, never by inspecting full sample results.
+weights:
+  size: 1.0
+  value: 1.0
+  quality: 1.0
+  momentum: 1.0
+  low_vol: 1.0
+  short_term_reversal: 1.0
+  seasonality: 1.0
+  high_proximity: 1.0
+  volume_shock: 1.0
+  illiquidity: 1.0
+  profitability: 1.0
+  profit_growth: 1.0
+  investment: 1.0
+  accruals: 1.0
+  leverage: 1.0
+  debt_issuance: 1.0

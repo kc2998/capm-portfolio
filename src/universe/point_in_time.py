@@ -781,6 +781,21 @@ def membership_on(universe_spans, date_iso):
     return set(active["ticker"])
 
 
+def ciks_on(universe_spans, date_iso):
+    """Return the CIKs that were S&P 500 members on date_iso.
+
+    The CIK-keyed sibling of membership_on: the backtest loop needs CIKs,
+    not tickers, since every downstream loader (fundamentals, prices) is
+    keyed by CIK. Built and validated in notebooks/exploring_backtest.ipynb,
+    Part 5.
+    """
+    active = universe_spans[
+        (universe_spans["start_date"] <= date_iso)
+        & (universe_spans["end_date"].isna() | (universe_spans["end_date"] >= date_iso))
+    ]
+    return list(active["cik"].dropna().unique())
+
+
 def ticker_on(ticker_history, cik, date_iso):
     """Return the vendor-facing ticker a CIK traded under on date_iso, or None.
 
