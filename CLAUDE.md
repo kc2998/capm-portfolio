@@ -34,6 +34,10 @@ Rules that follow:
 - **Do not write into `src/` or notebooks unless explicitly asked.** Creating scaffolding
   (empty files, directories, config) is fine when asked. Writing working logic is not.
 - **Keep steps small enough to be typed and understood in one sitting.**
+- **When proposing an edit to an existing file, give the exact file path and line numbers,
+  read the file immediately beforehand so the numbers are current, and show the surrounding
+  lines being replaced, not just the new code in isolation.** A new file being created from
+  scratch doesn't need this, there's nothing existing to locate.
 - **Explain structure, not only syntax.** Why a function lives in the module it does, why
   something is a function rather than a method or a class, why a boundary sits where it sits.
   This is part of the work rather than an aside.
