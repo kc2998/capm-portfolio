@@ -17,6 +17,7 @@ from src.loaders.prices import (
     _classify_from_probe,
     close_on_or_before,
     load_cik_prices,
+    next_open_after,
     save_cik_prices,
     to_yfinance_ticker,
 )
@@ -150,3 +151,34 @@ def test_close_on_or_before_returns_none_for_a_ticker_not_present():
     prices = _prices("XYZ", ["2024-01-05"], [10.0])
     assert close_on_or_before(prices, "ABC", "2024-01-05") is None
 
+
+# ---------------------------------------------------------------------------
+# next_open_after
+# ---------------------------------------------------------------------------
+
+def _opens(ticker, dates, opens):
+    index = pd.DatetimeIndex(dates, tz="America/New_York")
+    return pd.DataFrame({"ticker": ticker, "Open": opens}, index=index)
+
+
+def test_next_open_after_returns_the_following_sessions_open():
+    # 2024-01-05 is a Friday, 2024-01-08 the following Monday; querying on
+    # the Friday itself must return Monday's open, never Friday's own, the
+    # whole point is execution the session after the signal, not the same one.
+    prices = _opens("XYZ", ["2024-01-05", "2024-01-08"], [10.0, 11.0])
+    assert next_open_after(prices, "XYZ", "2024-01-05") == 11.0
+
+
+def test_next_open_after_returns_the_first_session_when_queried_before_any_data():
+    prices = _opens("XYZ", ["2024-01-05", "2024-01-08"], [10.0, 11.0])
+    assert next_open_after(prices, "XYZ", "2024-01-04") == 10.0
+
+
+def test_next_open_after_returns_none_at_or_after_the_last_session():
+    prices = _opens("XYZ", ["2024-01-05"], [10.0])
+    assert next_open_after(prices, "XYZ", "2024-01-05") is None
+
+
+def test_next_open_after_returns_none_for_a_ticker_not_present():
+    prices = _opens("XYZ", ["2024-01-05"], [10.0])
+    assert next_open_after(prices, "ABC", "2024-01-05") is None

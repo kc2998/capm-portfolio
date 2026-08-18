@@ -20,6 +20,7 @@ from src.universe.point_in_time import (
     flag_book_ticker_verification,
     flag_left_censored,
     membership_on,
+    ciks_on,
     nearest_10k,
     normalize_ticker_punctuation,
     ticker_on,
@@ -246,6 +247,23 @@ def test_membership_on_treats_null_end_date_as_still_active():
     ])
     assert membership_on(spans, "2020-01-01") == {"AAPL"}
     assert membership_on(spans, "1998-01-01") == {"AAPL", "XYZ"}
+
+def test_ciks_on_treats_null_end_date_as_still_active():
+    spans = pd.DataFrame([
+        {"cik": 320193, "start_date": "1996-01-02", "end_date": None},
+        {"cik": 999999, "start_date": "1996-01-02", "end_date": "2000-01-01"},
+    ])
+    assert ciks_on(spans, "2020-01-01") == [320193]
+    assert set(ciks_on(spans, "1998-01-01")) == {320193, 999999}
+
+
+def test_ciks_on_drops_missing_ciks_and_deduplicates():
+    spans = pd.DataFrame([
+        {"cik": pd.NA, "start_date": "1996-01-02", "end_date": None},
+        {"cik": 320193, "start_date": "1996-01-02", "end_date": None},
+        {"cik": 320193, "start_date": "2005-01-01", "end_date": None},
+    ])
+    assert ciks_on(spans, "2010-01-01") == [320193]
 
 
 # ---------------------------------------------------------------------------
