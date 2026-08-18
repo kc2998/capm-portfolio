@@ -28,29 +28,39 @@ underlying factor functions don't. Three adapters (`_facts_only`, `_prices_only`
 `_facts_and_prices`) capture the three argument shapes actually in use. Adding a seventeenth
 factor means one new line in this dict, not an edit to `compute_row`.
 
-**`compute_row(cik, as_of, ticker_history, market_prices)`**: every raw factor plus beta for
-one CIK on one date, a dict with `cik`, `ticker`, the sixteen factor names, and `beta`. `beta`
-is computed outside the registry deliberately, it needs `market_prices`, an external series
-none of the other factors touch.
+**`_load_universe_data(ciks)`**: loads each CIK's company facts and price history once and
+returns a `{cik: (facts, prices)}` dict. A CIK's cached data does not change within a single
+run, only `as_of` changes what the factor functions do with it, so `run_backtest` builds this
+once up front rather than letting every date reread the same files from disk.
 
-**`run_rebalance(as_of, ciks, weights, ticker_history, market_prices)`**: one date's full
-scoring pipeline for a list of CIKs, raw factors z-scored (`scoring/zscore.py`), combined
-(`scoring/combine.py`), neutralized against beta (`scoring/neutralize.py`). Returns a DataFrame
-indexed by `cik` with `ticker`, `combined_score`, `beta`, `factor_score`.
+**`compute_row(cik, as_of, facts, prices, ticker_history, market_prices)`**: every raw factor
+plus beta for one CIK on one date, a dict with `cik`, `ticker`, the sixteen factor names, and
+`beta`. `facts` and `prices` are supplied already loaded, from `_load_universe_data`. `beta` is
+computed outside the registry deliberately, it needs `market_prices`, an external series none
+of the other factors touch.
+
+**`run_rebalance(as_of, ciks, weights, cik_data, ticker_history, market_prices)`**: one date's
+full scoring pipeline for a list of CIKs, raw factors z-scored (`scoring/zscore.py`), combined
+(`scoring/combine.py`), neutralized against beta (`scoring/neutralize.py`). `cik_data` is the
+dict from `_load_universe_data`. Returns a DataFrame indexed by `cik` with `ticker`,
+`combined_score`, `beta`, `factor_score`.
 
 **`quantile_weights(df, score_col="factor_score", quantile=0.2)`**: long the top fifth of
 `factor_score`, short the bottom fifth, equal weighted within each side. Dollar neutral by
 construction, long and short weights each sum to 1.0 in magnitude.
 
-**`forward_return(prices, ticker, start, end)`** and **`add_forward_returns(result, as_of, next_date)`**:
-a stock's return from the trading session after `start` to the session after `end`, using
-`next_open_after` (`src/loaders/prices.py`), not either date's own close, per the top level
-`README.md`'s execution timing rule: "orders execute at the following session's open."
+**`forward_return(prices, ticker, start, end)`** and
+**`add_forward_returns(result, as_of, next_date, cik_data)`**: a stock's return from the
+trading session after `start` to the session after `end`, using `next_open_after`
+(`src/loaders/prices.py`), not either date's own close, per the top level `README.md`'s
+execution timing rule: "orders execute at the following session's open." `add_forward_returns`
+reads prices from `cik_data` rather than the disk.
 
 **`run_backtest(dates, universe_spans, ticker_history, market_prices, weights)`**: the loop
-itself. Runs `run_rebalance` and `quantile_weights` at every date in `dates`, attaches
-`forward_return` to every date but the last. Returns `(panel_results, portfolio_weights)`, both
-dicts keyed by `"YYYY-MM-DD"` date strings.
+itself. Resolves every CIK that appears in the universe on any date in `dates` and loads its
+data once via `_load_universe_data`, then runs `run_rebalance` and `quantile_weights` at every
+date, attaching `forward_return` to every date but the last. Returns
+`(panel_results, portfolio_weights)`, both dicts keyed by `"YYYY-MM-DD"` date strings.
 
 ### How to use it
 

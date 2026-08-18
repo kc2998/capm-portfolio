@@ -85,17 +85,29 @@ FACTOR_REGISTRY = {
 }
 
 
-def compute_row(cik, as_of, ticker_history, market_prices):
+def _load_universe_data(ciks):
+    """Load company facts and prices once per CIK, before the date loop
+    starts, so a run touches each CIK's cached files exactly once rather
+    than once per (cik, date) pair. A CIK's cached data doesn't change
+    within a single run, only as_of changes what the factor functions do
+    with it, so this changes nothing about what gets computed, only how
+    many times it gets read from disk.
+    """
+    return {cik: (load_company_facts(cik), load_cik_prices(cik)) for cik in ciks}
+
+
+def compute_row(cik, as_of, facts, prices, ticker_history, market_prices):
     """Every raw factor plus beta for one CIK on one date.
+
+    facts and prices are passed in already loaded, from _load_universe_data,
+    rather than loaded here: see that function for why.
 
     beta is computed separately from FACTOR_REGISTRY rather than folded into
     it: it needs market_prices, an external series none of the other
     factors touch, so it doesn't fit the registry's (facts, prices, ticker,
     as_of) shape without forcing it.
     """
-    facts = load_company_facts(cik)
     ticker = ticker_on(ticker_history, cik, as_of)
-    prices = load_cik_prices(cik)
 
     row = {"cik": cik, "ticker": ticker}
     for name, factor_fn in FACTOR_REGISTRY.items():
@@ -104,13 +116,17 @@ def compute_row(cik, as_of, ticker_history, market_prices):
     return row
 
 
-def run_rebalance(as_of, ciks, weights, ticker_history, market_prices):
+def run_rebalance(as_of, ciks, weights, cik_data, ticker_history, market_prices):
     """One date's full scoring pipeline: raw factors, z-scored, combined,
     neutralized against beta, for every cik in ciks.
+
+    cik_data is the {cik: (facts, prices)} dict from _load_universe_data,
+    built once for the whole run and passed down through every date.
     """
     raw = pd.DataFrame(
-        [compute_row(cik, as_of, ticker_history, market_prices) for cik in ciks]
+        [compute_row(cik, as_of, *cik_data[cik], ticker_history, market_prices) for cik in ciks]
     ).set_index("cik")
+    
     factor_cols = [c for c in raw.columns if c not in ("ticker", "beta")]
     zscored = raw[factor_cols].apply(zscore)
     combined_score = combine(zscored, weights)
@@ -119,6 +135,8 @@ def run_rebalance(as_of, ciks, weights, ticker_history, market_prices):
         "ticker": raw["ticker"], "combined_score": combined_score,
         "beta": raw["beta"], "factor_score": factor_score,
     })
+
+
 
 
 def quantile_weights(df, score_col="factor_score", quantile=0.2):
@@ -149,17 +167,18 @@ def forward_return(prices, ticker, start, end):
     return exit / entry - 1
 
 
-def add_forward_returns(result, as_of, next_date):
+def add_forward_returns(result, as_of, next_date, cik_data):
     """Attach each held stock's forward_return from as_of to next_date."""
     rets = {}
     for cik, row in result.iterrows():
-        prices = load_cik_prices(cik)
+        _, prices = cik_data[cik]
         if prices is None or row["ticker"] is None:
             continue
         rets[cik] = forward_return(prices, row["ticker"], as_of, next_date)
     result = result.copy()
     result["forward_return"] = pd.Series(rets)
     return result
+
 
 
 def run_backtest(dates, universe_spans, ticker_history, market_prices, weights):
@@ -173,14 +192,21 @@ def run_backtest(dates, universe_spans, ticker_history, market_prices, weights):
     """
     dates_str = [d.strftime("%Y-%m-%d") for d in dates]
 
+    # Every CIK that appears in the universe on any date in this run, resolved
+    # once up front so _load_universe_data reads each one's facts and prices
+    # from disk exactly once, no matter how many rebalance dates it appears on.
+    ciks_by_date = {d: ciks_on(universe_spans, d) for d in dates_str}
+    all_ciks = set().union(*ciks_by_date.values())
+    cik_data = _load_universe_data(all_ciks)
+
     panel_results = {}
     for d in dates_str:
-        ciks = ciks_on(universe_spans, d)
-        panel_results[d] = run_rebalance(d, ciks, weights, ticker_history, market_prices)
+        panel_results[d] = run_rebalance(d, ciks_by_date[d], weights, cik_data, ticker_history, market_prices)
 
     for prev_d, curr_d in zip(dates_str, dates_str[1:]):
-        panel_results[prev_d] = add_forward_returns(panel_results[prev_d], prev_d, curr_d)
+        panel_results[prev_d] = add_forward_returns(panel_results[prev_d], prev_d, curr_d, cik_data)
 
     portfolio_weights = {d: quantile_weights(df) for d, df in panel_results.items()}
 
     return panel_results, portfolio_weights
+
