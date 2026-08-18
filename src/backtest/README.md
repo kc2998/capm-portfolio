@@ -158,3 +158,37 @@ Fixed in `src/loaders/fundamentals.py`'s `shares_outstanding_as_of`, full story 
 - **Not yet wired into a script.** `run_backtest` currently only gets called from
   `notebooks/exploring_backtest.ipynb`; `scripts/build_backtest.py`, the entry point that would
   run it across full history and cache results to `data/processed/`, doesn't exist yet.
+
+## Plan: built so far, and what remains
+
+Built: the point in time universe and loaders (fundamentals, prices, market), sixteen JKP
+taxonomy factors, the beta risk model, the scoring pipeline (z-score, combine, neutralize),
+this module's walk forward loop and evaluation metrics, and a 169 test suite covering the
+universe, loader, and pure backtest logic (`quantile_weights`, `turnover`) plus every factor
+module. All of it was promoted from `notebooks/exploring_backtest.ipynb` into `src/` and
+verified to reproduce the notebook's own numbers exactly. `_load_universe_data` was added to
+cache each CIK's data once per run rather than once per rebalance date, needed before a full
+history run is practical at all.
+
+Remaining, in order, and why each step comes where it does:
+
+1. **`scripts/build_backtest.py`.** Does not exist yet. The mechanism check above covers
+   sixteen months, giving a standard error too large to conclude anything either way. A real
+   measurement needs a run across the full usable history, roughly 2010 or 2011 onward given
+   the fundamentals caveat above, persisted to `data/processed/` so later questions do not
+   require recomputing it.
+2. **Interpretation of that run.** The IC series needs to be read against the roughly 2.78
+   t-stat hurdle from the factor-zoo discipline section, with a correction for effective sample
+   size, since monthly rebalances one month apart are not fully independent observations the
+   way the naive standard error assumes. A per-factor IC, not only the combined score, and a
+   full history recheck of `missing_forward_return_positions`, belong at this stage too.
+3. **Weight optimization**, conditional on step 2. Purged cross validation over the factor
+   weights in `configs/factors.yaml`, currently equal weighted by construction, not tuned. This
+   comes after the untuned measurement specifically so the measurement is not itself the
+   product of search, the data snooping the factor-zoo discipline section warns against.
+4. **A real risk model and optimizer** (Build order step 7), replacing the quantile bucket
+   construction this module currently uses, gated on GICS sector data being reattached to the
+   universe.
+5. **`execution/paper_broker.py`**, and only after that, novel alpha candidates (Form 4 insider
+   trading, Lazy Prices, Wikipedia attention, Reddit sentiment), which the top level `README.md`
+   already pauses until this suite's own measurement is in hand.
