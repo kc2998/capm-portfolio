@@ -10,7 +10,7 @@ def _toy_facts():
         "facts": {
             "dei": {
                 "EntityCommonStockSharesOutstanding": {
-                    "units": {"shares": [{"end": "2024-04-22", "val": 1000.0, "filed": "2024-04-25", "form": "10-Q"}]}
+                    "units": {"shares": [{"end": "2024-04-22", "val": 1000.0, "filed": "2024-04-25", "form": "10-Q", "accn": "acc-1"}]}
                 }
             },
             "us-gaap": {

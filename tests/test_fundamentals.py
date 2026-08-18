@@ -329,8 +329,8 @@ def test_gross_profit_as_of_returns_none_when_neither_path_resolves():
 # shares_outstanding_as_of
 # ---------------------------------------------------------------------------
 
-def count(end, val, filed, form="10-K"):
-    return {"end": end, "val": val, "filed": filed, "form": form}
+def count(end, val, filed, form="10-K", accn="acc-1"):
+    return {"end": end, "val": val, "filed": filed, "form": form, "accn": accn}
 
 
 def shares_doc(dei_points=(), gaap_points=()):
@@ -350,9 +350,11 @@ def test_shares_outstanding_pools_both_tags_and_takes_the_freshest():
     # after the fiscal year ended, while its balance sheet count is dated to the
     # year end itself. The cover page figure is the more recent of the two and is
     # the one a rebalance on any later date should use.
+    # Both tags come from the same 10-K, hence the shared accn: a cover page
+    # count and a balance sheet count filed together, not two filings.
     facts = shares_doc(
-        dei_points=[count("2025-10-17", 14_840_000_000, "2025-10-31")],
-        gaap_points=[count("2025-09-27", 14_800_000_000, "2025-10-31")],
+        dei_points=[count("2025-10-17", 14_840_000_000, "2025-10-31", accn="0000320193-25-000100")],
+        gaap_points=[count("2025-09-27", 14_800_000_000, "2025-10-31", accn="0000320193-25-000100")],
     )
     val, _, _, tag, end = shares_outstanding_as_of(facts, "2025-12-01")
     assert val == 14_840_000_000
@@ -372,8 +374,8 @@ def test_shares_outstanding_prefers_the_later_filing_for_the_same_date():
     # An amendment supersedes the filing it amends, the same rule applied
     # everywhere else in this module.
     facts = shares_doc(dei_points=[
-        count("2026-02-18", 4_300_000_000, "2026-02-20"),
-        count("2026-02-18", 4_310_000_000, "2026-05-01", "10-K/A"),
+        count("2026-02-18", 4_300_000_000, "2026-02-20", accn="acc-original"),
+        count("2026-02-18", 4_310_000_000, "2026-05-01", "10-K/A", accn="acc-amendment"),
     ])
     assert shares_outstanding_as_of(facts, "2026-06-01")[0] == 4_310_000_000
 
@@ -382,8 +384,8 @@ def test_shares_outstanding_ignores_a_count_not_yet_filed():
     # The fresher figure exists in the cached document but had not been filed as
     # of the query date, so the older one is what was actually knowable.
     facts = shares_doc(
-        dei_points=[count("2025-10-17", 14_840_000_000, "2025-10-31")],
-        gaap_points=[count("2025-06-28", 14_900_000_000, "2025-08-01")],
+        dei_points=[count("2025-10-17", 14_840_000_000, "2025-10-31", accn="acc-q3")],
+        gaap_points=[count("2025-06-28", 14_900_000_000, "2025-08-01", accn="acc-q2")],
     )
     assert shares_outstanding_as_of(facts, "2025-09-01")[0] == 14_900_000_000
 

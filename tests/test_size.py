@@ -21,7 +21,7 @@ def _toy_facts(shares=1000.0, end="2024-04-22", filed="2024-04-25"):
         "facts": {
             "dei": {
                 "EntityCommonStockSharesOutstanding": {
-                    "units": {"shares": [{"end": end, "val": shares, "filed": filed, "form": "10-Q"}]}
+                    "units": {"shares": [{"end": end, "val": shares, "filed": filed, "form": "10-Q", "accn": "acc-1"}]}
                 }
             }
         }
