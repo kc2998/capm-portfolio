@@ -3,9 +3,11 @@
 Built and validated in notebooks/exploring_backtest.ipynb.
 """
 
+import logging
+
 import pandas as pd
 
-from src.universe.point_in_time import ticker_on, ciks_on
+from src.universe.point_in_time import DATA_PROCESSED, ticker_on, ciks_on
 from src.loaders.fundamentals import load_company_facts
 from src.loaders.prices import load_cik_prices, next_open_after
 from src.risk_model.beta import beta_as_of
@@ -29,6 +31,7 @@ from src.factors.accruals import accruals_factor
 from src.factors.leverage import leverage_factor
 from src.factors.debt_issuance import debt_issuance_factor
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Factor registry: every factor takes the same (facts, prices, ticker, as_of)
@@ -200,8 +203,10 @@ def run_backtest(dates, universe_spans, ticker_history, market_prices, weights):
     cik_data = _load_universe_data(all_ciks)
 
     panel_results = {}
-    for d in dates_str:
+
+    for i, d in enumerate(dates_str):
         panel_results[d] = run_rebalance(d, ciks_by_date[d], weights, cik_data, ticker_history, market_prices)
+        logger.info("month %d/%d (%s)", i + 1, len(dates_str), d)
 
     for prev_d, curr_d in zip(dates_str, dates_str[1:]):
         panel_results[prev_d] = add_forward_returns(panel_results[prev_d], prev_d, curr_d, cik_data)
@@ -210,3 +215,59 @@ def run_backtest(dates, universe_spans, ticker_history, market_prices, weights):
 
     return panel_results, portfolio_weights
 
+BACKTEST_PANEL_PATH = DATA_PROCESSED / "backtest_panel.parquet"
+BACKTEST_WEIGHTS_PATH = DATA_PROCESSED / "backtest_weights.parquet"
+
+
+def save_backtest_results(panel_results, portfolio_weights):
+    """Flatten both dicts (each keyed by date string) into one long table
+    per dict, cik pulled out of the index into its own column, and write
+    both to data/processed/. The dict-of-frames shape is convenient for the
+    loop that builds it and for metrics.py's own per-date iteration, but
+    isn't itself a parquet-friendly shape.
+    """
+    panel_long = pd.concat(panel_results, names=["date", "cik"]).reset_index()
+    weights_long = pd.concat(
+        {d: w.rename("weight") for d, w in portfolio_weights.items()}, names=["date", "cik"]
+    ).reset_index()
+    panel_long.to_parquet(BACKTEST_PANEL_PATH)
+    weights_long.to_parquet(BACKTEST_WEIGHTS_PATH)
+
+
+def load_backtest_results():
+    """Reconstruct (panel_results, portfolio_weights) from data/processed/,
+    the inverse of save_backtest_results. Returns None if no cached run
+    exists yet, the same missing-cache convention as load_market_prices.
+    """
+    if not (BACKTEST_PANEL_PATH.exists() and BACKTEST_WEIGHTS_PATH.exists()):
+        return None
+    panel_long = pd.read_parquet(BACKTEST_PANEL_PATH)
+    weights_long = pd.read_parquet(BACKTEST_WEIGHTS_PATH)
+    panel_results = {d: df.set_index("cik").drop(columns="date") for d, df in panel_long.groupby("date")}
+
+    # The most recent date never had a forward_return column in memory (see
+    # run_backtest: nothing to compare it against yet). save_backtest_results'
+    # pd.concat aligns every date to the union of columns, so that date comes
+    # back from parquet with the column anyway, filled entirely with NaN.
+    # Dropped here to match run_backtest's original shape exactly, so a
+    # loaded result and a freshly computed one are indistinguishable.
+    last_date = max(panel_results)
+    if "forward_return" in panel_results[last_date].columns:
+        panel_results[last_date] = panel_results[last_date].drop(columns="forward_return")
+
+    portfolio_weights = {d: df.set_index("cik")["weight"] for d, df in weights_long.groupby("date")}
+    return panel_results, portfolio_weights
+
+
+
+def build_backtest(dates, universe_spans, ticker_history, market_prices, weights, force_refresh=False):
+    """Load a cached run if present, else run_backtest and cache the result.
+    Same two branch contract as build_universe/build_prices/build_market.
+    """
+    if not force_refresh:
+        cached = load_backtest_results()
+        if cached is not None:
+            return cached
+    panel_results, portfolio_weights = run_backtest(dates, universe_spans, ticker_history, market_prices, weights)
+    save_backtest_results(panel_results, portfolio_weights)
+    return panel_results, portfolio_weights
