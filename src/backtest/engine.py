@@ -125,6 +125,11 @@ def run_rebalance(as_of, ciks, weights, cik_data, ticker_history, market_prices)
 
     cik_data is the {cik: (facts, prices)} dict from _load_universe_data,
     built once for the whole run and passed down through every date.
+
+    Each factor's own z-scored value is kept as a z_<factor> column,
+    alongside combined_score and factor_score, rather than discarded after
+    combine() uses it, so a per-factor IC is computable later without
+    recomputing the whole pipeline again.
     """
     raw = pd.DataFrame(
         [compute_row(cik, as_of, *cik_data[cik], ticker_history, market_prices) for cik in ciks]
@@ -134,10 +139,12 @@ def run_rebalance(as_of, ciks, weights, cik_data, ticker_history, market_prices)
     zscored = raw[factor_cols].apply(zscore)
     combined_score = combine(zscored, weights)
     factor_score = neutralize(combined_score, raw["beta"])
-    return pd.DataFrame({
+    result = pd.DataFrame({
         "ticker": raw["ticker"], "combined_score": combined_score,
         "beta": raw["beta"], "factor_score": factor_score,
     })
+    return pd.concat([result, zscored.add_prefix("z_")], axis=1)
+
 
 
 

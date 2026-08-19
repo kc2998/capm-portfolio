@@ -572,9 +572,65 @@ Wikipedia and some other scraped sources return `403 Forbidden` without a real `
   `validating_fundamentals.ipynb`, shared with `exploring_factors.ipynb` so factor code gets
   checked against the same documented edge cases a random sample could go a long time without
   hitting.
-- Next concrete step: per the Build order above, novel alpha research (Form 4 insider trading,
-  Lazy Prices, Wikipedia attention, sentiment, earnings call evasiveness) is deliberately paused.
-  The next step is beta, `configs/factors.yaml`, quantile bucket construction,
-  `backtest/engine.py`, `backtest/metrics.py`, and a basic transaction cost model: one
-  comprehensive information coefficient pass across the complete 13-theme factor set, to find out
-  whether it has real trading power before investing further in new signal research.
+- **Backtest engine, beta estimation, and a basic transaction cost model built and validated**,
+  closing out Build order step 6. `src/risk_model/beta.py` (`beta_as_of`: weekly returns,
+  104-week trailing window, refit fresh at every rebalance date) and `src/loaders/market.py` (a
+  cached SPY market proxy, same shape as a CIK price file) unlock `scoring/neutralize.py`'s own
+  beta argument, previously supplied by hand. `src/backtest/engine.py` (`FACTOR_REGISTRY`,
+  `run_rebalance`, `quantile_weights`, `forward_return`, `run_backtest`, and a
+  `build_backtest`/`save_backtest_results`/`load_backtest_results` cache matching the other
+  loaders' load-if-present contract) and `src/backtest/metrics.py` (`information_coefficient`,
+  `backtest_returns`, `max_drawdown`, `turnover`) give the whole factor suite an end to end walk
+  forward loop. `configs/factors.yaml` holds rebalance cadence and factor weights, equal
+  weighted deliberately, not fit. `scripts/build_backtest.py` is the entry point
+  (`python -m scripts.build_backtest [--start] [--end] [--refresh] [--verbose]`), caching
+  results to `data/processed/backtest_panel.parquet` and `backtest_weights.parquet`. Four real
+  bugs found and fixed while building this, not assumed away: a filer's 1000x share count error
+  (Packaging Corporation of America) caught by `size_factor` computing an impossible market cap;
+  a survivorship trap in an early version of the loop that reused one fixed company sample
+  across all dates instead of re-resolving universe membership fresh at each one; a subtle
+  execution-timing lookahead where `forward_return` originally traded at the same close the
+  signal was computed from; and a save/load round trip bug where `pd.concat`'s column-union
+  behavior silently gave the most recent cached date a `forward_return` column it never had in
+  memory. Full methodology and evidence in `notebooks/logs/backtest_construction.md`;
+  `notebooks/exploring_backtest.ipynb` is the historical record.
+- **First comprehensive information coefficient measurement completed, and it is not
+  significant.** A full history run (`scripts/build_backtest.py`, 199 monthly dates, 2010-01-31
+  to 2026-07-31, bounded by the fundamentals 2009 XBRL mandate and the cached price data's own
+  upper bound) of the equal-weighted, combined sixteen-factor suite gives mean IC 0.0146 (std
+  0.1022, n=197 after one date's forward return proved unmeasurable, see the log). Naive
+  t ≈ 2.00; correcting for the series' own lag-1 autocorrelation (0.0561, mild) drops effective
+  sample size to roughly 176 and the t-stat to ≈1.89, short of the roughly 2.78 hurdle the
+  factor-zoo discipline section above already commits this project to. Cumulative net return
+  over the window: 22.1 percent (roughly 1.2 percent annualized), max drawdown -19.1 percent,
+  against a same-window buy-and-hold SPY benchmark of 828.5 percent, though the two are not a
+  fair risk-adjusted comparison since the quantile bucket portfolio is dollar-neutral by
+  construction and SPY is not. `missing_forward_return_positions`, clean across the earlier
+  16-month mechanism check, is not perfectly clean at full scale: 195 missing observations
+  across 5 dates, all but 5 explained by the same price-data ceiling behind the one unmeasurable
+  month above, the remaining 5 real, documented 2018 delistings (CSRA, ANDV, EVHC, ESRX, SCG).
+  Full evidence in `notebooks/logs/backtest_construction.md`, Part 9.
+- **Per-factor information coefficient measured, and no individual factor is significant
+  either.** `run_rebalance` (`src/backtest/engine.py`) now returns each factor's own z-scored
+  value as a `z_<factor>` column alongside `combined_score`/`factor_score`, and a full rerun
+  (`python -m scripts.build_backtest --refresh`) regenerated the cache against the wider schema.
+  The best factor is `debt_issuance` (naive t=1.73, autocorrelation-corrected t=1.58), then
+  `leverage` (naive 1.28, corrected 1.22); every other factor is below naive t=1.0, and four
+  (`accruals` -0.96, `value` -0.54, `illiquidity` -0.43, `profit_growth` -0.10) have a negative
+  mean IC over this window. None approach the roughly 2.78 hurdle, naive or corrected. Worth
+  noting rather than treating as a contradiction: the combined score's own naive t (2.00) exceeds
+  every individual factor's naive t, the expected signature of averaging several weak,
+  partially-independent, consistently-signed signals, not evidence one dominant factor is being
+  diluted. Value and accruals reading negative is not read as a defect: both are long-studied,
+  historically robust factors, and value's well documented underperformance through most of the
+  2010s (partial reversal from 2022) is consistent with, not contradicted by, this measurement.
+  Full table and evidence in `notebooks/logs/backtest_construction.md`, Part 10.
+- Next concrete step: undecided, deliberately. Neither the combined score nor any individual
+  factor clears the significance bar on this measurement, which forecloses weight optimization
+  (nothing stands out to overweight, and searching for a subset that looks good in this specific
+  sample would itself be the data snooping the factor-zoo discipline section warns against) but
+  does not by itself dictate what comes next: continuing to the risk model and optimizer (Build
+  order step 7) regardless, revisiting the alpha model's construction (the neutralization step,
+  the factor list itself, or the equal-weighting assumption via a principled method other than
+  in-sample search), or something else, is an open question worth deciding deliberately rather
+  than defaulting into.

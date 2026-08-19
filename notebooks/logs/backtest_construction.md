@@ -2,7 +2,7 @@
 
 Record of what was learned while building the walk forward loop, portfolio construction, and
 evaluation metrics in `notebooks/exploring_backtest.ipynb`. Started 2026-08-13, last updated
-2026-08-17.
+2026-08-19.
 
 This file exists so the reasoning behind the backtest loop survives outside the notebook. The
 README states the decisions; this file states the evidence, organized to follow the notebook's
@@ -191,21 +191,131 @@ estimate is smaller than sixteen, not larger. This window validates that the com
 behaves sensibly; it does not yet answer whether the factor suite has real predictive power,
 that requires the full history run.
 
+## Part 9: full history results
+
+`scripts/build_backtest.py` (new) and three additions to `src/backtest/engine.py`
+(`save_backtest_results`, `load_backtest_results`, `build_backtest`) give the walk forward loop
+the same load-if-cached-else-compute-and-cache contract as the other loaders, persisting to
+`data/processed/backtest_panel.parquet` and `backtest_weights.parquet` as two long format
+tables (`date` and `cik` columns) rather than the dict-of-frames shape convenient for
+computation.
+
+A real round trip bug was caught before trusting the cache: `pd.concat` across every date's
+frame aligns to the union of columns, so the most recent date, which genuinely has no
+`forward_return` column (nothing to compare it against yet, per `run_backtest`'s own contract),
+came back from parquet with the column anyway, filled entirely with `NaN`. `load_backtest_results`
+now drops it back out for that date specifically, so a cached and a freshly computed result are
+indistinguishable. Left unfixed, this would have silently inflated the observed sample size by
+one wherever `information_coefficient`'s own `"forward_return" not in df.columns` check was
+relied on downstream. `run_backtest` also gained per-month progress logging
+(`logger.info("month %d/%d (%s)", ...)`, under `--verbose`), needed once a run stretches to
+nearly 200 dates rather than the seventeen-date mechanism check.
+
+The real measurement: 199 monthly dates, 2010-01-31 to 2026-07-31, bounded by the fundamentals
+2009 XBRL mandate and the cached price data's own upper bound respectively. One date,
+`2026-06-30`, produced no measurable IC at all: `factor_score` resolves normally (476 of 498),
+but `forward_return` is entirely `NaN`, traced to the price cache's own ceiling rather than a
+bug. `forward_return` for this date needs a session strictly after `2026-07-31` (the next
+rebalance date) as its exit price, and `2026-07-31` is the last date `data/raw/prices` reaches;
+`next_open_after` correctly returns `None` rather than guessing. This means the two most recent
+rebalance dates, not only the final one `run_backtest` already excludes by design, contribute no
+IC observation. Effective sample after dropping it: 197, not 198.
+
+IC: mean 0.0146, std 0.1022, naive SE `0.1022 / sqrt(197) ≈ 0.0073`, naive t ≈ 2.00, already
+short of the roughly 2.78 hurdle. Lag-1 autocorrelation (computed on the raw 198-length series
+with the `NaN` still in place, not on the dropna'd version, since a `NaN` sitting in the middle
+of a series would otherwise let a positional shift silently pair two months that are really two
+apart as if they were one apart; in this run the `NaN` happens to sit at the tail so it makes no
+difference, but the raw-series approach is the one that stays correct in general) is 0.0561,
+mild persistence rather than none. Effective sample size
+`197 * (1 - 0.0561) / (1 + 0.0561) ≈ 176.1`, corrected SE ≈ 0.0077, corrected t ≈ 1.89. The
+combined, equal-weighted sixteen-factor suite does not clear the significance bar on this
+measurement.
+
+Cumulative net return over the full window: 22.1 percent (roughly 1.2 percent annualized), max
+drawdown -19.1 percent. A buy-and-hold SPY benchmark computed the same way (the same
+`forward_return` mechanism, same dates, same treatment of the one unmeasurable month) returned
+828.5 percent cumulatively over the same window. The two are not a fair risk-adjusted
+comparison: the quantile bucket portfolio is dollar-neutral by construction (long and short
+weights each sum to 1.0 in magnitude), carrying close to zero net market beta, while SPY carries
+full market exposure. The comparison is still informative in absolute terms, and consistent
+with, not contradictory to, the IC result above.
+
+`missing_forward_return_positions`, flagged in Part 8's Open items as clean only across a
+sixteen-month window and needing a full history recheck: not clean at full scale. 5 dates show a
+held position with no measurable forward return, 195 total missing observations, but 190 of
+those are the single `2026-06-30` price-ceiling date above, already explained. The other 5,
+spread across four separate 2018 dates (`CSRA`, `ANDV`, `EVHC`, `ESRX`, `SCG`, one or two per
+date), are real delistings: all five were acquired in 2018 mergers (CSRA by General Dynamics,
+Andeavor by Marathon Petroleum, Envision Healthcare by KKR, Express Scripts by Cigna, SCANA by
+Dominion Energy), consistent with the price loader's own documented, much poorer coverage for
+delisted names. A small, bounded, explained residual, not a systemic gap.
+
+## Part 10: per-factor information coefficient
+
+Answers the gap Part 9 left open: whether the combined score's weak result hides an
+individually stronger factor underneath it. `run_rebalance` (`src/backtest/engine.py`) was
+widened to return each factor's own z-scored value as a `z_<factor>` column, alongside the
+existing `combined_score`/`factor_score`, computed once inside the function rather than
+discarded after `combine()` uses it. `save_backtest_results`/`load_backtest_results` needed no
+changes, since both are schema-agnostic (`pd.concat`/`groupby` on however many columns exist).
+This required a full rerun (`python -m scripts.build_backtest --refresh`), since the existing
+cache reflected the old, narrower schema.
+
+No individual factor clears the roughly 2.78 hurdle, naive or autocorrelation-corrected (same
+method as Part 9: lag-1 autocorrelation on the raw per-date IC series, effective sample size
+`n * (1 - rho) / (1 + rho)`). The correction moves every factor's t-stat by less than 0.15 in
+magnitude and never flips a conclusion, since the gap to significance is too large for it to
+matter here:
+
+| Factor | mean IC | naive t | rho | effective n | corrected t |
+|---|---|---|---|---|---|
+| debt_issuance | 0.0079 | 1.73 | 0.090 | 164.4 | 1.58 |
+| leverage | 0.0054 | 1.28 | 0.051 | 178.1 | 1.22 |
+| low_vol | 0.0193 | 0.99 | -0.016 | 203.4 | 1.00 |
+| momentum | 0.0119 | 0.82 | -0.050 | 217.8 | 0.87 |
+| seasonality | 0.0060 | 0.85 | -0.002 | 197.8 | 0.85 |
+| volume_shock | 0.0032 | 0.56 | -0.105 | 243.3 | 0.63 |
+| short_term_reversal | 0.0059 | 0.54 | -0.086 | 234.0 | 0.59 |
+| investment | 0.0027 | 0.42 | 0.119 | 155.0 | 0.37 |
+| quality | 0.0016 | 0.30 | -0.025 | 207.0 | 0.31 |
+| profitability | 0.0031 | 0.37 | 0.190 | 134.2 | 0.30 |
+| high_proximity | 0.0002 | 0.01 | -0.107 | 244.2 | 0.01 |
+| size | 0.0001 | 0.01 | 0.027 | 186.7 | 0.01 |
+| profit_growth | -0.0008 | -0.10 | 0.125 | 153.4 | -0.09 |
+| illiquidity | -0.0040 | -0.43 | -0.105 | 243.1 | -0.48 |
+| value | -0.0050 | -0.54 | 0.016 | 190.6 | -0.54 |
+| accruals | -0.0069 | -0.96 | 0.052 | 177.6 | -0.91 |
+
+Worth noting rather than treating as a contradiction: the combined score's own naive t (2.00,
+Part 9) exceeds every individual factor's naive t (max 1.73). Averaging several weak, partially
+independent, consistently-signed signals raising the apparent significance above any single
+ingredient is the expected behavior of combination, not evidence a strong factor is hiding in
+the mix. The four negative-IC factors below show the combined result is not secretly one
+dominant signal being diluted by noise; it is a genuine diversification effect across many
+individually weak pieces.
+
+`value` and `accruals` reading negative over this window is not read as a defect. Both are
+long-studied, historically robust factors in the literature this project's own risk-model
+taxonomy is built on, and value's underperformance through most of the 2010s (with a partial
+reversal beginning 2022) is well documented independently of this project's own measurement,
+consistent with rather than contradicted by what shows up here. One 16.5-year window is not
+evidence either factor is permanently broken.
+
+This result reinforces, more strongly than the combined-only measurement did, that weight
+optimization (Build order step 7's optimizer, and purged cross validation over
+`configs/factors.yaml`) is premature: there is no standout factor to overweight even if the
+intent were to, and searching for a subset that looks good in this specific sample would be
+exactly the data snooping the factor-zoo discipline section warns against.
+
 ## Open items
 
 - `BX` and `LULU`'s persistent missing beta was flagged twice during validation and never
   root-caused. Not blocking, but still genuinely unresolved, not merely accepted.
-- Fundamentals data is only reliable from the 2009 XBRL mandate onward (see
-  `fundamentals_construction.md`), so a genuinely comprehensive run can't meaningfully start at
-  1996 even though price and universe data reach that far back; the real run window is roughly
-  2010 to present, about 15 years rather than 28.
-- `missing_forward_return_positions` came back clean across sixteen months; this needs
-  re-checking across the full history run, where more delistings are likely to occur.
-- `COST_BPS = 10` and equal factor weights are both deliberate placeholders, not tuned results;
-  revisiting either from the same pass meant to measure IC would be the data snooping the
-  factor-zoo discipline section warns against.
-- `scripts/build_backtest.py`, the entry point that runs `run_backtest` across full history and
-  saves results to `data/processed/` rather than holding everything in notebook memory, does not
-  exist yet, per the top level `README.md`'s Current status.
-- `tests/test_backtest.py`, pure logic tests for `quantile_weights`, `turnover`,
-  `next_open_after`, and `ciks_on` matching the existing test convention, does not exist yet.
+- `COST_BPS = 10` and equal factor weights in `configs/factors.yaml` are both deliberate
+  placeholders, not tuned results. Per Part 10's results, tuning either remains premature: no
+  individual factor stands out to justify overweighting it, so there is nothing principled to
+  tune toward yet.
+- What comes after this measurement is an open question, not yet decided: continuing to the risk
+  model and optimizer (Build order step 7) regardless, revisiting the alpha model's construction
+  itself, or something else. See the top level `README.md`'s Current status.
